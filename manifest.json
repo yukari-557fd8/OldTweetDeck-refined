@@ -1,9 +1,9 @@
 {
-    "name": "OldTweetDeck",
+    "name": "OldTweetDeck-refined",
     "description": "Returns old TweetDeck!",
     "version": "4.4.0",
     "manifest_version": 3,
-    "homepage_url": "https://github.com/dimdenGD/OldTweetDeck",
+    "homepage_url": "https://github.com/yukari-557fd8/OldTweetDeck-refined",
     "permissions": [
         "webNavigation",
         "cookies",
