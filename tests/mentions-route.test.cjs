@@ -36,25 +36,26 @@ function allJsonPage(entries, { tweets = [], users = [], top = 'TOP', bottom = '
     });
 }
 
-test('mentions are read from the all.json notifications timeline, with their own cursors', () => {
+test('mentions are read from the GraphQL notifications timeline, with their own cursors', () => {
     const route = loadRoute();
     // legacy adds x-act-as-user-id between open() and send(), so the cursor is only picked in beforeSend
     const prepare = (xhr) => { route.beforeRequest(xhr); route.beforeSend(xhr); return xhr; };
     const first = prepare(legacyRequest('count=40'));
-    assert.ok(first.modUrl.startsWith('https://x.com/i/api/2/notifications/all.json?'), first.modUrl);
-    assert.ok(!first.modUrl.includes('cursor='), 'initial load carries no cursor');
+    assert.ok(first.modUrl.startsWith('https://x.com/i/api/graphql/PV7uQNNsuQhCB2vjo4WJGA/NotificationsTimeline?'), first.modUrl);
+    const variables = (xhr) => JSON.parse(new URL(xhr.modUrl).searchParams.get('variables'));
+    assert.deepEqual(variables(first), { timeline_type: 'All', count: 20 });
     assert.equal(first.opened, first.modUrl);
 
     route.afterRequest({ storage: { user_id: '42' }, responseText: allJsonPage([]) });
 
     // since polls re-read the top page. cursor-top is suspected of hiding unread items.
     const newer = prepare(legacyRequest('count=40&since_id=5'));
-    assert.ok(!newer.modUrl.includes('cursor='), newer.modUrl);
+    assert.equal(variables(newer).cursor, undefined, newer.modUrl);
     const older = prepare(legacyRequest('count=40&max_id=5'));
-    assert.ok(older.modUrl.endsWith('&cursor=BOTTOM'), older.modUrl);
+    assert.equal(variables(older).cursor, 'BOTTOM', older.modUrl);
     // another account's request must not borrow 42's cursors
     const other = prepare(legacyRequest('count=40&max_id=5', '43'));
-    assert.ok(!other.modUrl.includes('cursor='), other.modUrl);
+    assert.equal(variables(other).cursor, undefined, other.modUrl);
 });
 
 test('a since poll does not replace the bottom cursor the column has scrolled to', () => {
@@ -66,7 +67,7 @@ test('a since poll does not replace the bottom cursor the column has scrolled to
     route.afterRequest({ storage: { user_id: '42', max_id: '5' }, responseText: allJsonPage([], { bottom: 'PAGE2' }) });
     route.afterRequest({ storage: { user_id: '42', since_id: '9' }, responseText: allJsonPage([], { bottom: 'TOP_PAGE' }) });
     const older = prepare(legacyRequest('count=40&max_id=5'));
-    assert.ok(older.modUrl.endsWith('&cursor=PAGE2'), older.modUrl);
+    assert.equal(JSON.parse(new URL(older.modUrl).searchParams.get('variables')).cursor, 'PAGE2', older.modUrl);
 });
 
 test('only mention, reply and quote entries of the page become tweets', () => {
@@ -119,6 +120,6 @@ test('a mention from a muted or blocked account is skipped', () => {
     assert.deepEqual(tweets.map(t => t.id_str), ['101']);
 });
 
-test('rate-limit headers reach legacy as they are, since Mentions shares its all.json requests with Notifications', () => {
+test('rate-limit headers reach legacy as they are, since Mentions shares its notification requests with Notifications', () => {
     assert.equal(loadRoute().responseHeaderOverride, undefined);
 });

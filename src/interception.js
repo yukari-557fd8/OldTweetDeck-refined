@@ -399,6 +399,56 @@ function applyGraphUserState(user, result) {
     markVerified(user);
 }
 
+// The v1.1 user fields legacy reads (TwitterUser.fromJSONObject in bundle.js: the profile popup's
+// bio, counts, banner, website, join date), from where X keeps them now that users come without
+// `legacy`: core, avatar, banner, profile_bio, website, relationship_counts, tweet_counts,
+// action_counts, privacy, location. A field the user already has is kept. X gives no listed_count,
+// so it is 0 (legacy's prettyNumber would show undefined as an empty Listed cell).
+function fillUserFromGraph(user, result) {
+    if (!user || !result) return user;
+    const set = (key, value) => {
+        if (user[key] !== undefined && user[key] !== null && user[key] !== "") return;
+        if (value === undefined || value === null || value === "") return;
+        user[key] = value;
+    };
+    set("name", result.core?.name);
+    set("screen_name", result.core?.screen_name);
+    set("created_at", result.core?.created_at);
+    if (!user.profile_image_url_https && result.avatar?.image_url) {
+        user.profile_image_url_https = String(result.avatar.image_url).replace("http://", "https://");
+    }
+    if (!user.profile_image_url && user.profile_image_url_https) {
+        user.profile_image_url = user.profile_image_url_https.replace("https://", "http://");
+    }
+    set("profile_banner_url", result.banner?.image_url);
+    set("description", result.profile_bio?.description);
+    set("location", result.location?.location);
+    const website = result.website?.url;
+    set("url", website);
+    if (!user.entities) {
+        const description = Object.assign({ urls: [] }, result.profile_bio?.entities?.description);
+        user.entities = { description };
+        const urls = result.profile_bio?.entities?.url?.urls;
+        if (Array.isArray(urls) && urls.length) {
+            user.entities.url = { urls };
+        } else if (website) {
+            const display = String(website).replace(/^https?:\/\//, "").replace(/\/$/, "");
+            user.entities.url = { urls: [{ url: website, expanded_url: website, display_url: display, indices: [0, String(website).length] }] };
+        }
+    }
+    set("followers_count", result.relationship_counts?.followers);
+    set("friends_count", result.relationship_counts?.following);
+    set("statuses_count", result.tweet_counts?.tweets);
+    set("media_count", result.tweet_counts?.media_tweets);
+    set("favourites_count", result.action_counts?.favorites_count);
+    set("listed_count", 0);
+    if (result.privacy?.protected) user.protected = true;
+    if (result.relationship_perspectives?.muting) user.muting = true;
+    if (result.relationship_perspectives?.blocking) user.blocking = true;
+    applyGraphUserState(user, result);
+    return user;
+}
+
 function isPromoted(entry) {
     const id = entry?.entryId || "";
     if (id.includes("promoted")) return true;
@@ -478,41 +528,12 @@ function parseTweet(res, options) {
         if (!result) return;
         tweet.conversation_id = +tweet.conversation_id_str;
         tweet.text = tweet.full_text;
-        // X is migrating user fields out of `legacy` into `core`/`avatar`/etc,
-        // so `legacy` can now be missing entirely. The fallbacks below already
-        // repopulate name/screen_name/avatar/created_at from the new shape.
+        // X no longer sends `legacy` for users: name, avatar, bio, counts and the rest are filled
+        // from the new shape (fillUserFromGraph), so the profile popup has them too.
         tweet.user = result.legacy || {};
         tweet.user.id = +tweet.user_id_str;
         tweet.user.id_str = tweet.user_id_str;
-        if(!tweet.user.profile_image_url && result?.avatar?.image_url) {
-            tweet.user.profile_image_url = result.avatar.image_url;
-            tweet.user.profile_image_url_https = tweet.user.profile_image_url.replace("http://", "https://");
-        }
-        if(!tweet.user.profile_image_url && tweet.user.profile_image_url_https) {
-            tweet.user.profile_image_url = tweet.user.profile_image_url_https.replace("https://", "http://");
-        }
-        if(!tweet.user.name && result?.core?.name) {
-            tweet.user.name = result.core.name;
-        }
-        if(!tweet.user.screen_name && result?.core?.screen_name) {
-            tweet.user.screen_name = result.core.screen_name;
-        }
-        if(!tweet.user.created_at && result?.core?.created_at) {
-            tweet.user.created_at = result.core.created_at;
-        }
-        if(result?.relationship_perspectives?.muting) {
-            tweet.user.muting = true;
-        }
-        if(result?.relationship_perspectives?.blocking) {
-            tweet.user.blocking = true;
-        }
-        if(result?.privacy?.protected) {
-            tweet.user.protected = true;
-        }
-        if(result?.location?.location) {
-            tweet.user.location = res.core.user_results.result.location.location;
-        }
-        applyGraphUserState(tweet.user, result);
+        fillUserFromGraph(tweet.user, result);
 
         if (tweet.retweeted_status_result?.result) {
             let result = tweet.retweeted_status_result.result;
@@ -547,35 +568,7 @@ function parseTweet(res, options) {
                     result.legacy.quoted_status.user.id_str = result.legacy.quoted_status.user_id_str;
                     result.legacy.quoted_status.user.id = +result.legacy.quoted_status.user_id_str;
                     let user_result = result?.quoted_status_result?.result?.core?.user_results?.result;
-                    if(!result.legacy.quoted_status.user.profile_image_url && user_result?.avatar?.image_url) {
-                        result.legacy.quoted_status.user.profile_image_url = user_result.avatar.image_url;
-                        result.legacy.quoted_status.user.profile_image_url_https = result.legacy.quoted_status.user.profile_image_url.replace("http://", "https://");
-                    }
-                    if(!result.legacy.quoted_status.user.profile_image_url && result.legacy.quoted_status.user.profile_image_url_https) {
-                        result.legacy.quoted_status.user.profile_image_url = result.legacy.quoted_status.user.profile_image_url_https.replace("https://", "http://");
-                    }
-                    if(!result.legacy.quoted_status.user.name && user_result?.core?.name) {
-                        result.legacy.quoted_status.user.name = user_result.core.name;
-                    }
-                    if(!result.legacy.quoted_status.user.screen_name && user_result?.core?.screen_name) {
-                        result.legacy.quoted_status.user.screen_name = user_result.core.screen_name;
-                    }
-                    if(!result.legacy.quoted_status.user.created_at && user_result?.core?.created_at) {
-                        result.legacy.quoted_status.user.created_at = user_result.core.created_at;
-                    }
-                    if(user_result?.relationship_perspectives?.muting) {
-                        result.legacy.quoted_status.user.muting = true;
-                    }
-                    if(user_result?.relationship_perspectives?.blocking) {
-                        result.legacy.quoted_status.user.blocking = true;
-                    }
-                    if(user_result?.privacy?.protected) {
-                        result.legacy.quoted_status.user.protected = true;
-                    }
-                    if(user_result?.location?.location) {
-                        result.legacy.quoted_status.user.location = user_result.location.location;
-                    }
-                    applyGraphUserState(result.legacy.quoted_status.user, user_result);
+                    fillUserFromGraph(result.legacy.quoted_status.user, user_result);
                 } else {
                     console.warn("No retweeted quoted status", result);
                 }
@@ -586,39 +579,11 @@ function parseTweet(res, options) {
                 tweet.retweeted_status.text = tweet.retweeted_status.full_text;
                 tweet.retweeted_status.id = +tweet.retweeted_status.id_str;
                 tweet.retweeted_status.conversation_id = +tweet.retweeted_status.conversation_id_str;
-                // Same migration as the top-level tweet: user fields may live in core/avatar instead of legacy.
+                // Same as the top-level tweet: the author's fields live outside `legacy` now.
                 tweet.retweeted_status.user = user_result.legacy || {};
                 tweet.retweeted_status.user.id_str = tweet.retweeted_status.user_id_str;
                 tweet.retweeted_status.user.id = +tweet.retweeted_status.user_id_str;
-                if(!tweet.retweeted_status.user.profile_image_url && user_result?.avatar?.image_url) {
-                    tweet.retweeted_status.user.profile_image_url = user_result.avatar.image_url;
-                    tweet.retweeted_status.user.profile_image_url_https = tweet.retweeted_status.user.profile_image_url.replace("http://", "https://");
-                } 
-                if(!tweet.retweeted_status.user.profile_image_url && tweet.retweeted_status.user.profile_image_url_https) {
-                    tweet.retweeted_status.user.profile_image_url = tweet.retweeted_status.user.profile_image_url_https.replace("https://", "http://");
-                }
-                if(!tweet.retweeted_status.user.name && user_result?.core?.name) {
-                    tweet.retweeted_status.user.name = user_result.core.name;
-                }
-                if(!tweet.retweeted_status.user.screen_name && user_result?.core?.screen_name) {
-                    tweet.retweeted_status.user.screen_name = user_result.core.screen_name;
-                }
-                if(!tweet.retweeted_status.user.created_at && user_result?.core?.created_at) {
-                    tweet.retweeted_status.user.created_at = user_result.core.created_at;
-                }
-                if(user_result?.relationship_perspectives?.muting) {
-                    tweet.retweeted_status.user.muting = true;
-                }
-                if(user_result?.relationship_perspectives?.blocking) {
-                    tweet.retweeted_status.user.blocking = true;
-                }
-                if(user_result?.privacy?.protected) {
-                    tweet.retweeted_status.user.protected = true;
-                }
-                if(user_result?.location?.location) {
-                    tweet.retweeted_status.user.location = result.core.user_results.result.location.location;
-                }
-                applyGraphUserState(tweet.retweeted_status.user, user_result);
+                fillUserFromGraph(tweet.retweeted_status.user, user_result);
                 tweet.retweeted_status.ext = {};
                 if (result.views) {
                     tweet.retweeted_status.ext.views = { r: { ok: { count: +result.views.count } } };
@@ -670,42 +635,14 @@ function parseTweet(res, options) {
                 tweet.quoted_status.text = tweet.quoted_status.full_text;
                 if (tweet.quoted_status) {
                     let user_result = result.core?.user_results?.result;
-                    // Same migration as above: the author may have no `legacy` but still have core/avatar.
+                    // Same as above: the author's fields live outside `legacy` now.
                     tweet.quoted_status.user = user_result ? (user_result.legacy || {}) : undefined;
                     if (!tweet.quoted_status.user) {
                         delete tweet.quoted_status;
                     } else {
                         tweet.quoted_status.user.id_str = tweet.quoted_status.user_id_str;
                         tweet.quoted_status.user.id = +tweet.quoted_status.user_id_str;
-                        if(!tweet.quoted_status.user.profile_image_url && user_result?.avatar?.image_url) {
-                            tweet.quoted_status.user.profile_image_url = user_result.avatar.image_url;
-                            tweet.quoted_status.user.profile_image_url_https = tweet.quoted_status.user.profile_image_url.replace("http://", "https://");
-                        }
-                        if(!tweet.quoted_status.user.profile_image_url && tweet.quoted_status.user.profile_image_url_https) {
-                            tweet.quoted_status.user.profile_image_url = tweet.quoted_status.user.profile_image_url_https.replace("https://", "http://");
-                        }
-                        if(!tweet.quoted_status.user.name && user_result?.core?.name) {
-                            tweet.quoted_status.user.name = user_result.core.name;
-                        }
-                        if(!tweet.quoted_status.user.screen_name && user_result?.core?.screen_name) {
-                            tweet.quoted_status.user.screen_name = user_result.core.screen_name;
-                        }
-                        if(!tweet.quoted_status.user.created_at && user_result?.core?.created_at) {
-                            tweet.quoted_status.user.created_at = user_result.core.created_at;
-                        }
-                        if(user_result?.relationship_perspectives?.muting) {
-                            tweet.quoted_status.user.muting = true;
-                        }
-                        if(user_result?.relationship_perspectives?.blocking) {
-                            tweet.quoted_status.user.blocking = true;
-                        }
-                        if(user_result?.privacy?.protected) {
-                            tweet.quoted_status.user.protected = true;
-                        }
-                        if(user_result?.location?.location) {
-                            tweet.quoted_status.user.location = user_result.location.location;
-                        }
-                        applyGraphUserState(tweet.quoted_status.user, user_result);
+                        fillUserFromGraph(tweet.quoted_status.user, user_result);
                         tweet.quoted_status.ext = {};
                         if (result.views) {
                             tweet.quoted_status.ext.views = { r: { ok: { count: +result.views.count } } };
@@ -1145,19 +1082,103 @@ function noteTopFetch(feedKey) {
     topFetches[feedKey] = Date.now();
 }
 
-const HOME_TIMELINE_FEATURES = {"rweb_video_screen_enabled":false,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":false,"rweb_tipjar_consumption_enabled":true,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"premium_content_api_read_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"responsive_web_jetfuel_frame":true,"responsive_web_grok_share_attachment_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"tweet_awards_web_tipping_enabled":false,"responsive_web_grok_show_grok_translated_post":false,"responsive_web_grok_analysis_button_from_backend":true,"creator_subscriptions_quote_tweet_preview_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_grok_community_note_auto_translation_is_enabled":false,"responsive_web_enhance_cards_enabled":false};
+// Query id, features and variables are what x.com's Following tab sent on 2026-10-23 (HAR). x.com
+// sends them as POST; OTD keeps GET like every other route. The features object is the one x.com
+// shares across its timeline queries in this deploy (same as LIST_MEMBERS_FEATURES).
+const HOME_TIMELINE_FEATURES = {"rweb_video_screen_enabled":false,"rweb_cashtags_enabled":true,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"premium_content_api_read_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"responsive_web_jetfuel_frame":true,"rweb_sports_post_context_enabled":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_annotations_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"content_disclosure_indicator_enabled":true,"content_disclosure_ai_generated_indicator_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_grok_analysis_button_from_backend":true,"post_ctas_fetch_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"responsive_web_enhance_cards_enabled":false};
 function homeTimelineUrl(cursor) {
-    const variables = { count: 40, includePromotedContent: true, latestControlAvailable: true };
+    const variables = { count: 40, includePromotedContent: true, enableRanking: false };
     if (cursor) variables.cursor = cursor;
-    return `${NEW_API}/cWF3cqWadLlIXA6KJWhcew/HomeLatestTimeline?${generateParams(HOME_TIMELINE_FEATURES, variables)}`;
+    return `${NEW_API}/hB-6CNtJdReMJny7IPMoQQ/HomeLatestTimeline?${generateParams(HOME_TIMELINE_FEATURES, variables, { withPayments: false })}`;
 }
 
 const NOTIFICATIONS_ALL_URL = `https://${location.hostname}/i/api/2/notifications/all.json?include_profile_interstitial_type=1&include_blocking=1&include_blocked_by=1&include_followed_by=1&include_want_retweets=1&include_mute_edge=1&include_can_dm=1&include_can_media_tag=1&include_ext_has_nft_avatar=1&include_ext_is_blue_verified=1&include_ext_verified_type=1&include_ext_profile_image_shape=1&skip_status=1&cards_platform=Web-12&include_cards=1&include_ext_alt_text=true&include_ext_limited_action_results=true&include_quote_count=true&include_reply_count=1&tweet_mode=extended&include_ext_views=true&include_entities=true&include_user_entities=true&include_ext_media_color=true&include_ext_media_availability=true&include_ext_sensitive_media_warning=true&include_ext_trusted_friends_metadata=true&send_error_codes=true&simple_quoted_tweet=true&count=20&requestContext=launch&ext=mediaStats%2ChighlightedLabel%2ChasNftAvatar%2CvoiceInfo%2CbirdwatchPivot%2CsuperFollowMetadata%2CunmentionInfo%2CeditControl`;
-function notificationsAllUrl(cursor) {
-    return `${NOTIFICATIONS_ALL_URL}${cursor ? `&cursor=${cursor}` : ""}`;
+// Notifications come from the GraphQL timeline x.com's own notifications page reads (query id and
+// features from its 2026-10-23 requests; the features are the set x.com shares across its timeline
+// queries). all.json, the previous source, packs every earlier liker of a post into the newest like's
+// notification (10 listed, "and 80 others"), so a poll delivered them all at once as new; the GraphQL
+// page lists only the likers that arrived since. Its bucket is 1500 / 15 min, shared with x.com, where
+// all.json had 180. `localStorage.OTDnotificationsSource = "all.json"` goes back to the old source.
+const NOTIFICATIONS_TIMELINE_FEATURES = {"rweb_video_screen_enabled":false,"rweb_cashtags_enabled":true,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"premium_content_api_read_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"responsive_web_jetfuel_frame":true,"rweb_sports_post_context_enabled":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_annotations_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"content_disclosure_indicator_enabled":true,"content_disclosure_ai_generated_indicator_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_grok_analysis_button_from_backend":true,"post_ctas_fetch_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"responsive_web_enhance_cards_enabled":false};
+function notificationsUrl(cursor) {
+    if (localStorage.OTDnotificationsSource === "all.json") {
+        return `${NOTIFICATIONS_ALL_URL}${cursor ? `&cursor=${cursor}` : ""}`;
+    }
+    const variables = { timeline_type: "All", count: 20 };
+    if (cursor) variables.cursor = cursor;
+    return `${NEW_API}/PV7uQNNsuQhCB2vjo4WJGA/NotificationsTimeline?${generateParams(NOTIFICATIONS_TIMELINE_FEATURES, variables)}`;
 }
 
-// A since poll re-reads the top of all.json with no cursor. cursor-top is suspected of
+function notificationsTimeline(data) {
+    return data?.data?.viewer_v2?.user_results?.result?.notification_timeline?.timeline || null;
+}
+
+// A 200 whose body is only a GraphQL error must fail the page (see graphqlPageInspector); an all.json
+// body is fine as it is.
+const notificationsPageInspector = graphqlPageInspector((data) => data?.globalObjects || notificationsTimeline(data));
+
+// Both sources in the all.json shape the routes below read: `entries` whose items name a notification
+// or a tweet by id, and `go` (globalObjects) holding v1.1 users, tweets and aggregate notifications.
+// GraphQL users and tweets are converted on the way; a tweet that cannot be converted, or an author
+// X withholds, drops its entry rather than failing the page.
+function notificationsPage(text) {
+    const response = JSON.parse(text);
+    if (response.globalObjects) {
+        return {
+            entries: response.timeline.instructions.find((i) => i.addEntries).addEntries.entries,
+            go: response.globalObjects,
+        };
+    }
+    const instructions = notificationsTimeline(response)?.instructions || [];
+    const go = { users: {}, tweets: {}, notifications: {} };
+    const entries = [];
+    const keepTweet = (result) => {
+        const tweet = safeParseTweet(result);
+        if (!tweet) return null;
+        go.tweets[tweet.id_str] = tweet;
+        if (tweet.user?.id_str && !go.users[tweet.user.id_str]) go.users[tweet.user.id_str] = tweet.user;
+        return tweet;
+    };
+    for (const entry of instructions.find((i) => i.type === "TimelineAddEntries")?.entries || []) {
+        if (!String(entry.entryId || "").startsWith("notification-")) {
+            // Cursors keep their shape: findCursor reads content.value.
+            entries.push(entry);
+            continue;
+        }
+        const item = entry.content?.itemContent;
+        const element = entry.content?.clientEventInfo?.element;
+        const wrap = (content) => ({ entryId: entry.entryId, sortIndex: entry.sortIndex, content: { item: { clientEventInfo: { element }, content } } });
+        if (item?.itemType === "TimelineTweet") {
+            const tweet = keepTweet(item.tweet_results?.result);
+            if (tweet) entries.push(wrap({ tweet: { id: tweet.id_str } }));
+        } else if (item?.itemType === "TimelineNotification") {
+            const template = item.template || {};
+            const fromUsers = [];
+            for (const ref of template.from_users || []) {
+                const user = legacyUserFromGraph(ref?.user_results?.result);
+                if (!user) continue;
+                if (!go.users[user.id_str]) go.users[user.id_str] = user;
+                fromUsers.push({ user: { id: user.id_str } });
+            }
+            const targetObjects = [];
+            for (const ref of template.target_objects || []) {
+                const tweet = keepTweet(ref?.tweet_results?.result);
+                if (tweet) targetObjects.push({ tweet: { id: tweet.id_str } });
+            }
+            const time = Date.parse(item.timestamp_ms);
+            go.notifications[item.id] = {
+                id: item.id,
+                timestampMs: String(Number.isFinite(time) ? time : +entry.sortIndex),
+                message: { text: item.rich_message?.text || "" },
+                template: { aggregateUserActionsV1: { fromUsers, targetObjects } },
+            };
+            entries.push(wrap({ notification: { id: item.id } }));
+        }
+    }
+    return { entries, go };
+}
+
+// A since poll re-reads the top of the notifications timeline with no cursor. cursor-top is suspected of
 // omitting unread notifications (#507, #487), and one page is 20 items. The bottom cursor
 // on that top page is not the column's scroll position; storing it would make the next
 // max_id request refetch the first page until legacy treats the feed as exhausted.
@@ -1169,7 +1190,7 @@ function storeNotificationCursors(entries, storage, prefix) {
     if (bottom) cursors[`${prefix}-${storage.user_id}-bottom`] = bottom;
 }
 
-// The Notifications and Mentions columns both read the top of all.json, each on its own legacy
+// The Notifications and Mentions columns both read the top of the same timeline, each on its own legacy
 // timer. The timers neither started together nor shared a period (see POLL_FLOORS), so the same
 // mention reached one column well after the other, and both fetched the same page. Now a top-page
 // request that goes out also answers every top-page request of that account made while it is in
@@ -1655,11 +1676,7 @@ function legacyUserFromGraph(result) {
         created_at: legacy.created_at || result.core?.created_at || "",
     });
     if (!user.profile_image_url) user.profile_image_url = image.replace("https://", "http://");
-    applyGraphUserState(user, result);
-    if (result.privacy?.protected) user.protected = true;
-    if (result.relationship_perspectives?.muting) user.muting = true;
-    if (result.relationship_perspectives?.blocking) user.blocking = true;
-    if (result.location?.location && !user.location) user.location = result.location.location;
+    fillUserFromGraph(user, result);
     rememberUser(user);
     return user;
 }
@@ -2465,6 +2482,7 @@ const proxyRoutes = [
     {
         path: "/1.1/activity/about_me.json",
         method: "GET",
+        inspectResponse: notificationsPageInspector,
         beforeRequest: (xhr) => {
             const params = new URL(xhr.modUrl).searchParams;
             xhr.storage.since_id = params.get("since_id");
@@ -2472,7 +2490,7 @@ const proxyRoutes = [
             if (params.get("user_id")) {
                 xhr.storage.user_id = params.get("user_id");
             }
-            xhr.modUrl = notificationsAllUrl();
+            xhr.modUrl = notificationsUrl();
         },
         // Which account's cursor applies is only known once legacy has set its headers.
         openHandler: deferOpen,
@@ -2484,7 +2502,7 @@ const proxyRoutes = [
                 cursor = cursors[`notifications-${user_id}-bottom`];
             }
             xhr.storage.topPage = !cursor;
-            xhr.modUrl = notificationsAllUrl(cursor);
+            xhr.modUrl = notificationsUrl(cursor);
             openDeferred(xhr);
         },
         sendHandler: (xhr, data) => {
@@ -2509,9 +2527,7 @@ const proxyRoutes = [
                 return xhr.storage.notifications;
             }
             try {
-                const response = JSON.parse(notificationsResponseText(xhr));
-                const entries = response.timeline.instructions.find((i) => i.addEntries).addEntries.entries;
-                const go = response.globalObjects;
+                const { entries, go } = notificationsPage(notificationsResponseText(xhr));
                 markNotificationUsers(go);
                 const notifications = [];
                 const shouldDeliver = notificationDeliveryFilter(xhr.storage.user_id);
@@ -2644,6 +2660,7 @@ const proxyRoutes = [
     {
         path: "/1.1/statuses/mentions_timeline.json",
         method: "GET",
+        inspectResponse: notificationsPageInspector,
         beforeRequest: (xhr) => {
             const params = new URL(xhr.modUrl).searchParams;
             xhr.storage.since_id = params.get("since_id");
@@ -2651,10 +2668,10 @@ const proxyRoutes = [
             if (params.get("user_id")) {
                 xhr.storage.user_id = params.get("user_id");
             }
-            // X's mentions.json lags the "all" notifications timeline by half an hour or more and does
-            // not catch up while being polled, so fetch the all.json page instead and keep only the
+            // X's mentions timeline lags the "All" notifications timeline by half an hour or more and does
+            // not catch up while being polled, so fetch the "All" page instead and keep only the
             // mention / reply / quote entries below (the cursors stay under their own `mentions-` keys).
-            xhr.modUrl = notificationsAllUrl();
+            xhr.modUrl = notificationsUrl();
         },
         // Which account's cursor applies is only known once legacy has set its headers.
         openHandler: deferOpen,
@@ -2666,7 +2683,7 @@ const proxyRoutes = [
                 cursor = cursors[`mentions-${user_id}-bottom`];
             }
             xhr.storage.topPage = !cursor;
-            xhr.modUrl = notificationsAllUrl(cursor);
+            xhr.modUrl = notificationsUrl(cursor);
             openDeferred(xhr);
         },
         sendHandler: (xhr, data) => {
@@ -2687,9 +2704,7 @@ const proxyRoutes = [
         },
         afterRequest: (xhr) => {
             try {
-                const response = JSON.parse(notificationsResponseText(xhr));
-                const entries = response.timeline.instructions.find((i) => i.addEntries).addEntries.entries;
-                const go = response.globalObjects;
+                const { entries, go } = notificationsPage(notificationsResponseText(xhr));
                 markNotificationUsers(go);
                 const tweets = [];
                 for(let entry of entries) {
@@ -3209,14 +3224,12 @@ const proxyRoutes = [
             let res = [];
             for (let entry of entries) {
                 if (entry.entryId.startsWith("sq-I-u-") || entry.entryId.startsWith("user-")) {
-                    let result = entry.content.itemContent.user_results.result;
-                    if (!result || !result.legacy) {
+                    // Users come without `legacy` now; legacyUserFromGraph builds the v1.1 user either way.
+                    const user = legacyUserFromGraph(entry.content.itemContent.user_results?.result);
+                    if (!user) {
                         console.log("Bug: no user", entry);
                         continue;
                     }
-                    let user = result.legacy;
-                    user.id_str = result.rest_id;
-                    applyGraphUserState(user, result);
                     res.push(user);
                 }
             }

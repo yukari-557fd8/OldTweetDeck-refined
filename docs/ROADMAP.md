@@ -225,7 +225,7 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 | カラム | 変更前 | 変更後 | 15 分あたり(HAR の実測) |
 |---|---|---|---|
 | Home | legacy は約 5 秒ごと。35 秒以内の新着取得の 40% をランダムに捨てていた(upstream ed5432c) | 捨てない。下限 4 秒 | 約 225 回(枠 500) |
-| 通知・Mentions | 固定 15 秒 / 下限 10 秒 | 通知もヘッダを読む。下限 7 秒 | 約 128 回(枠 180) |
+| 通知・Mentions | 固定 15 秒 / 下限 10 秒 | 通知もヘッダを読む。下限 7 秒 | 約 128 回(枠は all.json で 180、6-e の GraphQL で 1500) |
 | ブックマーク | 下限 4 秒(枠を 5 分の 1 に見せる処理はそのまま) | 下限 60 秒 | — |
 
 - 下限は localStorage で秒単位に上書きできる: `OTDhomeRefreshSeconds` / `OTDnotificationsRefreshSeconds`(通知と Mentions)/ `OTDbookmarksRefreshSeconds`。
@@ -237,8 +237,20 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 - `NotificationsTimeline`(GraphQL、`EUX2EwvgT4f9F7sC4A59Eg`)の「All」は、`all.json` と同じ 20 件を返す(`entryId`・`sortIndex` まで一致)。「Mentions」(`timeline_type: "Mentions"`)は cursor なしの先頭ページが約 4 時間遅れ、cursor-top 付きの取得で追いついた(`mentions.json` と同じ症状)。
 - レート制限は `NotificationsTimeline` が 1500 回 / 15 分で x.com と共有、`all.json` は 180 回 / 15 分で x.com は使っていない。新着の速さは変わらないので、移行は見送った。`all.json` が廃止されたときの切り替え先にはできる。通知の形(`TimelineNotification` の `template.from_users` / `target_objects`、`TimelineTweet` の `tweet_results`)は既存の `legacyUserFromGraph` / `safeParseTweet` で変換できる。引用通知の形は未確認。
 - x.com のフォロー中タブは、放置中にホームを取得しない(3 分半で 0 回)。ピリオドキーでは約 1 秒間隔で取得し、すべて 200。通知は未読数(`ViewerBadgeCounts`)を 30 秒ごとに見るだけ。
-- `HomeLatestTimeline` の枠は GET と POST で別。OTD(GET、`cWF3cqWadLlIXA6KJWhcew`)と x.com の GET(`NmDBT3APtNxDpMqIEauu7A`)は同じ枠を使っているとみられる(推測)。
-- 残課題: Home のクエリ ID が x.com の現行(`NmDBT3APtNxDpMqIEauu7A`、POST 併用)と違う。古い ID が廃止されると Home が 400 / 404 になる。
+- `HomeLatestTimeline` の枠は GET と POST で別。OTD(GET、当時 `cWF3cqWadLlIXA6KJWhcew`)と x.com の GET(`NmDBT3APtNxDpMqIEauu7A`)は同じ枠を使っているとみられる(推測)。
+- Home のクエリ ID は 2026-10-23 の HAR(フォロー中タブ)に合わせて `hB-6CNtJdReMJny7IPMoQQ` に更新した。x.com は POST で `variables` に `enableRanking: false` と `seenTweetIds`、`fieldToggles` に `withPayments: false` を付け、`features` はリストメンバー取得と同じ 40 項目。枠は 500 回 / 15 分。OTD は GET のまま、`seenTweetIds` は送らない。ユーザーは `legacy` を持たず `core` / `avatar` / `relationship_perspectives` に分かれて返る(Phase 7 の変換で対応済み)。
+- 同じ HAR で、x.com の計測ログは `/i/jot` ではなく `POST /i/api/1.1/flow/timeline.json`(`debug=true&log=[client_event...]`、応答は空の 200、枠 2000 回 / 15 分)に送られていた。タイムラインの取得とは無関係で、OTD は使わない。
+
+### 6-e. 通知の取得元を GraphQL `NotificationsTimeline` に切り替えた(2026-10-23)
+
+- 調査(x.com の通知ページと OTD の HAR を同じツイート・同じ時刻のまとめで突き合わせ): `all.json` は最新のいいねの通知に過去のいいねした人を詰め込んで返す(配列は 10 人まで、本文は「他 80 人」)。x.com 本体が読む GraphQL の `NotificationsTimeline`(`PV7uQNNsuQhCB2vjo4WJGA`、`timeline_type: "All"`、`count: 20`)は同じ通知を最新の人だけで返す。6-c の「同じ 20 件」はエントリの並びの話で、`from_users` の中身は違っていた。
+- このため、通知カラムがまだ取得していないいいねのまとめが届くと、過去の全員が最新の時刻で一度に先頭へ並んでいた(いいね・RT は 6-d の絞り込みの対象外)。GraphQL に切り替えると、新着確認で届くのは本当に新しい人だけになる。
+- 実装: `notificationsUrl` が GraphQL の URL を作り、`notificationsPage` が応答を `all.json` と同じ形(`entries` + `globalObjects`)に直してから既存の解析に渡す。ユーザーは `legacyUserFromGraph`、ツイートは `parseTweet` で v1.1 形に変換する。`all.json` の応答もそのまま読めるので、`localStorage.OTDnotificationsSource = "all.json"` で旧経路に戻せる。GraphQL のエラー本文だけの 200 は `inspectResponse` で失敗として扱う。
+- 枠は 1500 回 / 15 分で x.com 本体と共有。カーソルの扱い(新着確認は cursor なしで先頭を読む、下スクロールは bottom)は変えていない。
+- どちらの API も一人ひとりの時刻は返さない。`from_users` は 10 人まで、「○○さんが 7 件のあなたのポストをいいねしました」の `target_objects` は 1 件だけで、これらは変わらない。
+- 実機確認(2026-10-23 15:55、OTD と x.com の HAR を同時刻に取得): OTD の `NotificationsTimeline` は 7 秒ごとに 16 回すべて 200、先頭ページは x.com 本体が同時に受けたものと `entryId`・`sortIndex` まで一致。枠の残数は両者で交互に減り、共有を確認。新着のいいねは既存のまとめ(5 人 → 6 人、時刻は最新に移動、ID は同じ)として届き、OTD は配信済み判定で新しい 1 人だけを列に渡した。
+- x.com 本体は 30 秒ごとに cursor-top 付き(`count: 40`)で新着確認し、変化が無ければカーソル 2 件だけ(約 1KB)、変化があればそのまとめ 1 件だけが返る。OTD は cursor なしで先頭ページ(約 130KB)を 7 秒ごとに読み直している。all.json で疑われた cursor-top の取りこぼし(#507 / #487)が GraphQL でも起きるかは未確認。起きないなら cursor-top に変えて転送量を減らせる。
+- 未確認: GraphQL の `users_followed_you` と `users_retweeted_your_tweet` は HAR で形を確認したが、`generic_*` 系と引用通知の実データは少ない。Mentions(`user_mentioned_you` / `user_replied_to_your_tweet` / `user_quoted_your_tweet`)は `TimelineTweet` で届き、`tweet_results` をそのまま変換する。
 
 ### 6-d. フォローのまとめ通知で古いフォロワーが上にあふれる
 
@@ -289,6 +301,13 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
     display: inline-block;
 }
 ```
+
+### 7-d. プロフィールの情報がほぼ空になる(2026-10-23)
+
+- 症状: ユーザーをクリックして開くプロフィールに、自己紹介・フォロー数・ツイート数・バナー・サイトが出ない。
+- 原因: X が GraphQL のユーザーから `legacy` を無くした(Home、通知、`UserByRestId`、`UsersByRestIds` のすべてで確認)。OTD は `legacy` を v1.1 のユーザーとして渡し、無いときは名前・ID・アイコン・登録日だけ補っていた。プロフィールは legacy の `TD.cache.twitterUsers` にあるツイート作者をそのまま使うので(`users/show` は呼ばれない)、作者の変換が空ならプロフィールも空になる。
+- 対応: `fillUserFromGraph` が新しい形(`core` / `avatar` / `banner` / `profile_bio` / `website` / `relationship_counts` / `tweet_counts` / `action_counts` / `privacy` / `location`)から `TwitterUser.fromJSONObject` が読む v1.1 の項目を埋める。ツイート作者(本体・RT 元・引用元)、`users/show`、リストメンバー、通知のユーザー、ユーザー検索が同じ関数を通る。ユーザー検索は `legacy` が無いユーザーを捨てていたので、これも直した。
+- X が返さないもの: リスト数(`listed_count`)。legacy の `prettyNumber` は未定義を空文字にして Listed が空欄になるので、`legacy` に無いときは 0 を入れる。サイトは `profile_bio.entities.url` があればその展開済み URL、無ければ `website.url`(t.co のことがある)をそのまま使う。
 
 ### Phase 7 のテスト
 

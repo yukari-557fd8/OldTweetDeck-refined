@@ -117,12 +117,20 @@ test('users/show and user search users get the same follow state and checkmark',
 
     const result = graphUser('2', { blue: true, following: true });
     result.legacy = { screen_name: 'user2', name: 'User 2' };
+    const bare = graphUser('3', { followedBy: true });
+    delete bare.legacy;
     const page = { data: { search_by_raw_query: { search_timeline: { timeline: { instructions: [{ entries: [
         { entryId: 'user-2', content: { itemContent: { user_results: { result } } } },
+        { entryId: 'user-3', content: { itemContent: { user_results: { result: bare } } } },
+        { entryId: 'user-4', content: { itemContent: { user_results: { result: { __typename: 'UserUnavailable' } } } } },
     ] }] } } } } };
-    const [found] = route('/1.1/users/search.json').afterRequest({ responseText: JSON.stringify(page) });
-    assert.equal(found.following, true);
-    assert.equal(found.ext_is_blue_verified, true);
+    const found = route('/1.1/users/search.json').afterRequest({ responseText: JSON.stringify(page) });
+    assert.deepEqual(Array.from(found, u => u.screen_name), ['user2', 'user3']);
+    assert.equal(found[0].following, true);
+    assert.equal(found[0].ext_is_blue_verified, true);
+    // a user without legacy is still found, with the fields the result list and profile read
+    assert.equal(found[1].followed_by, true);
+    assert.equal(found[1].profile_image_url_https, 'https://pbs.twimg.com/3.jpg');
 });
 
 test('a following flag legacy already has is kept', () => {
@@ -174,4 +182,64 @@ test('Notifications and Mentions users get legacy\'s badge only when Better Twee
         { legacy: false, blue: false, business: true },
         { legacy: false, blue: false, business: false },
     ]);
+});
+
+// Since 2026-10 X sends users without `legacy`; the profile popup (TwitterUser.fromJSONObject) reads
+// bio, counts, banner and website from the v1.1 fields, so they must be filled from the new shape.
+function fullGraphUser(id) {
+    return {
+        ...graphUser(id), legacy: undefined, core: { screen_name: 'user' + id, name: 'User ' + id, created_at: 'Wed Oct 14 10:00:00 +0000 2026' },
+        banner: { image_url: 'https://pbs.twimg.com/profile_banners/' + id + '/1' },
+        profile_bio: { description: 'hello https://t.co/x', entities: { description: { urls: [{ url: 'https://t.co/x', expanded_url: 'https://example.org/', display_url: 'example.org', indices: [6, 20] }] },
+            url: { urls: [{ url: 'https://t.co/w', expanded_url: 'https://example.com/', display_url: 'example.com', indices: [0, 14] }] } } },
+        website: { url: 'https://t.co/w' }, location: { location: 'Tokyo' },
+        relationship_counts: { followers: 377, following: 726 }, tweet_counts: { tweets: 10709, media_tweets: 278 },
+        action_counts: { favorites_count: 130024 }, privacy: { protected: true },
+    };
+}
+function profileFields(user) {
+    return {
+        description: user.description, location: user.location, url: user.url, banner: user.profile_banner_url,
+        followers: user.followers_count, friends: user.friends_count, statuses: user.statuses_count, media: user.media_count,
+        likes: user.favourites_count, listed: user.listed_count, protected: user.protected, website: user.entities.url.urls[0].display_url,
+        bioUrls: user.entities.description.urls.length, name: user.name, screen: user.screen_name, joined: user.created_at,
+    };
+}
+const expectedProfile = {
+    description: 'hello https://t.co/x', location: 'Tokyo', url: 'https://t.co/w', banner: 'https://pbs.twimg.com/profile_banners/7/1',
+    followers: 377, friends: 726, statuses: 10709, media: 278, likes: 130024, listed: 0, protected: true, website: 'example.com',
+    bioUrls: 1, name: 'User 7', screen: 'user7', joined: 'Wed Oct 14 10:00:00 +0000 2026',
+};
+
+test('a user without legacy still carries the profile popup fields, as a tweet author and from users/show', () => {
+    const { parseTweet, legacyUserFromGraph } = load();
+    const author = parseTweet(tweetResult('100', fullGraphUser('7'))).user;
+    assert.deepEqual(profileFields(author), expectedProfile);
+    assert.deepEqual(profileFields(legacyUserFromGraph(fullGraphUser('7'))), expectedProfile);
+    // a retweeted and a quoted author too
+    const rt = parseTweet(tweetResult('101', graphUser('1'), { retweeted_status_result: { result: tweetResult('100', fullGraphUser('7')) } }));
+    assert.deepEqual(profileFields(rt.retweeted_status.user), expectedProfile);
+    const quote = parseTweet({ ...tweetResult('102', graphUser('1'), { quoted_status_id_str: '100', is_quote_status: true }), quoted_status_result: { result: tweetResult('100', fullGraphUser('7')) } });
+    assert.deepEqual(profileFields(quote.quoted_status.user), expectedProfile);
+    // a user with no website has no url entity; the listed count X does not send is 0, not blank
+    const noBio = { ...fullGraphUser('8'), profile_bio: { description: 'plain' } };
+    const plain = legacyUserFromGraph({ ...noBio, website: { url: '' } });
+    assert.equal(plain.url, undefined);
+    assert.equal(plain.entities.url, undefined);
+    assert.equal(JSON.stringify(plain.entities.description), '{"urls":[]}');
+    assert.equal(plain.listed_count, 0);
+    // a website X sends without url entities is shown as it is
+    const bareSite = legacyUserFromGraph({ ...noBio, website: { url: 'https://example.net/' } });
+    assert.equal(bareSite.entities.url.urls[0].display_url, 'example.net');
+    assert.equal(bareSite.entities.url.urls[0].expanded_url, 'https://example.net/');
+});
+
+test('fields legacy still sends are kept over the new shape', () => {
+    const { legacyUserFromGraph } = load();
+    const user = legacyUserFromGraph({ ...fullGraphUser('7'), legacy: { description: 'old bio', followers_count: 1, listed_count: 5, entities: { description: { urls: [] } } } });
+    assert.equal(user.description, 'old bio');
+    assert.equal(user.followers_count, 1);
+    assert.equal(user.listed_count, 5);
+    assert.equal(user.entities.url, undefined);
+    assert.equal(user.friends_count, 726);
 });

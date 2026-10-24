@@ -66,6 +66,12 @@ test('a Teams account resolves its own Home cursors at send time', async () => {
     const ctx = load();
     const first = await homeRequest(ctx, 'count=40', '42');
     assert.ok(first.xhr.opened.url.includes('HomeLatestTimeline'), first.xhr.opened.url);
+    // The query id, variables and field toggles x.com's Following tab sent on 2026-10-23.
+    const params = new URL(first.xhr.opened.url).searchParams;
+    assert.ok(first.xhr.opened.url.includes('/hB-6CNtJdReMJny7IPMoQQ/HomeLatestTimeline?'), first.xhr.opened.url);
+    assert.deepEqual(JSON.parse(params.get('variables')), { count: 40, includePromotedContent: true, enableRanking: false });
+    assert.deepEqual(JSON.parse(params.get('fieldToggles')), { withPayments: false });
+    assert.equal(JSON.parse(params.get('features')).responsive_web_nested_quote_preview_enabled, true);
     assert.equal(cursorIn(first.xhr), undefined);
     assert.equal(first.xhr.headers['x-act-as-user-id'], '42');
     assert.equal(first.xhr.headers['x-client-transaction-id'], 'tx');

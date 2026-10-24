@@ -135,7 +135,7 @@ test('scrolling down and other accounts do not take the top page', () => {
     assert.equal(request(notifications, 'count=20&since_id=1', '43').sent, 1);
     // a max_id request follows the column's own bottom cursor
     const older = request(mentions, 'count=40&max_id=100');
-    assert.ok(older.opened.endsWith('&cursor=PAGE1'), older.opened);
+    assert.equal(JSON.parse(new URL(older.opened).searchParams.get('variables')).cursor, 'PAGE1', older.opened);
     assert.equal(older.sent, 1);
 });
 
