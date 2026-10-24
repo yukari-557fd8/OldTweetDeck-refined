@@ -32,7 +32,7 @@
 | (フォークで確認) | 通知カラムと Mentions カラムの更新がずれる、Home の更新間隔がばらつく、フォローのまとめ通知で古いフォロワーが上にあふれる | 4d26629 / 017d2a7 / 6522d2c | Phase 6。5 分間の HAR で間隔と 429 が出ないことは確認(2026-10-18)。2 カラムに同時に出ることの目視と、フォロー通知の実機確認は未了 |
 | (フォークで確認) | Better TweetDeck を併用すると、Home などで認証済みのアカウントのバッジが消え、相互フォローバッジが通知・Mentions にしか出ない | a7c4cc5 | Phase 7。相互の行で認証バッジが隠れるのは BTD の仕様で、BTD のカスタム CSS で対処(2026-10-18 に確認) |
 | (機能要望) | カラム設定「Tweet authors」に、相互フォローの相手だけを表示する選択肢が無い | 8d58466 | Phase 8。legacy が `followed_by` を捨てていたので `TwitterUser` に持たせ、「verified users」と同じ作りで「mutual follows」を追加。検索・イベントカラムには出さない。実機確認は問題なし(2026-10-19) |
-| (フォークで確認) | X が GraphQL のクエリ ID を予告なく変える(`HomeLatestTimeline` は 2026-10-23 と 10-24 で別の ID)。features のキーが増えると要求が落ちる | (未コミット) | Phase 9。x.com 本体の JS から ID と features を実行時に拾い、送信直前に差し替える。ハードコードの値は退路。実機確認は問題なし(2026-10-24) |
+| (フォークで確認) | X が GraphQL のクエリ ID を予告なく変える(`HomeLatestTimeline` は 2026-10-23 と 10-24 で別の ID)。features のキーが増えると要求が落ちる | e025999 | Phase 9。x.com 本体の JS から ID と features を実行時に拾い、送信直前に差し替える。ハードコードの値は退路。実機確認は問題なし(2026-10-24) |
 
 ---
 
@@ -356,7 +356,7 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 
 ## Phase 9: GraphQL のクエリ ID と features を x.com 本体の JS から実行時に取る(実装済み)
 
-**状態: 実装済み。実機確認も問題なし(2026-10-24)。** 変更は `src/interception.js`(レジストリと Proxy の送信経路)、`src/challenge.js`(x.com の HTML 取得を共有)、`tests/graphql-registry.test.cjs`(新規 9 件)。`node --test tests/*.test.cjs` は 114 件通過。
+**状態: 完了。実機確認も問題なし(2026-10-24)。** 変更は e025999。`src/interception.js`(レジストリと Proxy の送信経路)、`src/challenge.js`(x.com の HTML 取得を共有)、`tests/graphql-registry.test.cjs`(新規 9 件)。`node --test tests/*.test.cjs` は 114 件通過。
 
 発端: 2026-10-23 に HAR から更新した `HomeLatestTimeline` の ID(`hB-6CNtJdReMJny7IPMoQQ`)が、翌 10-24 には x.com 本体で `KQPfcqQJJqF6M0D77p3JKw` になっていた。ID の更新を人手と GitHub 配信(`injection.js` が main の `interception.js` を読む)に頼ると、X の変更に気づいて push するまで止まる。X は旧 ID をしばらく生かすので(2026-10-24 時点で OTD の 20 操作中 12 の ID が最新と違い、すべて動いていた)、いつ切られるかが読めないのが問題。
 
