@@ -178,7 +178,12 @@ window.addEventListener('message', e => {
             }
         }
 
-        let homepageData = await fetch(`https://${location.hostname}/`).then(res => res.text());
+        // interception.js reads the same page for x.com's GraphQL query ids; whichever asks first fetches it.
+        if(!window.OTDhomepage) {
+            window.OTDhomepage = fetch(`https://${location.hostname}/`).then(res => res.text());
+            window.OTDhomepage.catch(() => { delete window.OTDhomepage; });
+        }
+        let homepageData = await window.OTDhomepage;
         let dom = new DOMParser().parseFromString(homepageData, 'text/html');
         let anims = Array.from(dom.querySelectorAll('svg[id^="loading-x"]')).map(svg => svg.outerHTML);
 

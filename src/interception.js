@@ -1082,31 +1082,33 @@ function noteTopFetch(feedKey) {
     topFetches[feedKey] = Date.now();
 }
 
-// Query id, features and variables are what x.com's Following tab sent on 2026-10-23 (HAR). x.com
-// sends them as POST; OTD keeps GET like every other route. The features object is the one x.com
-// shares across its timeline queries in this deploy (same as LIST_MEMBERS_FEATURES).
-const HOME_TIMELINE_FEATURES = {"rweb_video_screen_enabled":false,"rweb_cashtags_enabled":true,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"premium_content_api_read_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"responsive_web_jetfuel_frame":true,"rweb_sports_post_context_enabled":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_annotations_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"content_disclosure_indicator_enabled":true,"content_disclosure_ai_generated_indicator_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_grok_analysis_button_from_backend":true,"post_ctas_fetch_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"responsive_web_enhance_cards_enabled":false};
+// Query id, features and variables are what x.com's Following tab sent on 2026-10-24 (HAR; the id
+// had already changed once since 10-23). x.com sends them as POST; OTD keeps GET like every other
+// route. The features object is the one x.com shares across its timeline queries in this deploy.
+// These are the fallback: the GraphQL operations registry above replaces id and features with what
+// x.com's current bundles declare.
+const HOME_TIMELINE_FEATURES = {"rweb_video_screen_enabled":false,"rweb_cashtags_enabled":true,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"premium_content_api_read_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"responsive_web_jetfuel_frame":true,"rweb_sports_post_context_enabled":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_annotations_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"content_disclosure_indicator_enabled":true,"content_disclosure_ai_generated_indicator_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_grok_analysis_button_from_backend":true,"post_ctas_fetch_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_made_on_x_label_enabled":false,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"responsive_web_enhance_cards_enabled":false};
 function homeTimelineUrl(cursor) {
     const variables = { count: 40, includePromotedContent: true, enableRanking: false };
     if (cursor) variables.cursor = cursor;
-    return `${NEW_API}/hB-6CNtJdReMJny7IPMoQQ/HomeLatestTimeline?${generateParams(HOME_TIMELINE_FEATURES, variables, { withPayments: false })}`;
+    return `${NEW_API}/KQPfcqQJJqF6M0D77p3JKw/HomeLatestTimeline?${generateParams(HOME_TIMELINE_FEATURES, variables, { withPayments: false })}`;
 }
 
 const NOTIFICATIONS_ALL_URL = `https://${location.hostname}/i/api/2/notifications/all.json?include_profile_interstitial_type=1&include_blocking=1&include_blocked_by=1&include_followed_by=1&include_want_retweets=1&include_mute_edge=1&include_can_dm=1&include_can_media_tag=1&include_ext_has_nft_avatar=1&include_ext_is_blue_verified=1&include_ext_verified_type=1&include_ext_profile_image_shape=1&skip_status=1&cards_platform=Web-12&include_cards=1&include_ext_alt_text=true&include_ext_limited_action_results=true&include_quote_count=true&include_reply_count=1&tweet_mode=extended&include_ext_views=true&include_entities=true&include_user_entities=true&include_ext_media_color=true&include_ext_media_availability=true&include_ext_sensitive_media_warning=true&include_ext_trusted_friends_metadata=true&send_error_codes=true&simple_quoted_tweet=true&count=20&requestContext=launch&ext=mediaStats%2ChighlightedLabel%2ChasNftAvatar%2CvoiceInfo%2CbirdwatchPivot%2CsuperFollowMetadata%2CunmentionInfo%2CeditControl`;
 // Notifications come from the GraphQL timeline x.com's own notifications page reads (query id and
-// features from its 2026-10-23 requests; the features are the set x.com shares across its timeline
-// queries). all.json, the previous source, packs every earlier liker of a post into the newest like's
+// features as of 2026-10-24; the features are the set x.com shares across its timeline queries; the
+// registry above keeps both current). all.json, the previous source, packs every earlier liker of a post into the newest like's
 // notification (10 listed, "and 80 others"), so a poll delivered them all at once as new; the GraphQL
 // page lists only the likers that arrived since. Its bucket is 1500 / 15 min, shared with x.com, where
 // all.json had 180. `localStorage.OTDnotificationsSource = "all.json"` goes back to the old source.
-const NOTIFICATIONS_TIMELINE_FEATURES = {"rweb_video_screen_enabled":false,"rweb_cashtags_enabled":true,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"premium_content_api_read_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"responsive_web_jetfuel_frame":true,"rweb_sports_post_context_enabled":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_annotations_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"content_disclosure_indicator_enabled":true,"content_disclosure_ai_generated_indicator_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_grok_analysis_button_from_backend":true,"post_ctas_fetch_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"responsive_web_enhance_cards_enabled":false};
+const NOTIFICATIONS_TIMELINE_FEATURES = {"rweb_video_screen_enabled":false,"rweb_cashtags_enabled":true,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"premium_content_api_read_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"responsive_web_jetfuel_frame":true,"rweb_sports_post_context_enabled":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_annotations_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"content_disclosure_indicator_enabled":true,"content_disclosure_ai_generated_indicator_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_grok_analysis_button_from_backend":true,"post_ctas_fetch_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_made_on_x_label_enabled":false,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"responsive_web_enhance_cards_enabled":false};
 function notificationsUrl(cursor) {
     if (localStorage.OTDnotificationsSource === "all.json") {
         return `${NOTIFICATIONS_ALL_URL}${cursor ? `&cursor=${cursor}` : ""}`;
     }
     const variables = { timeline_type: "All", count: 20 };
     if (cursor) variables.cursor = cursor;
-    return `${NEW_API}/PV7uQNNsuQhCB2vjo4WJGA/NotificationsTimeline?${generateParams(NOTIFICATIONS_TIMELINE_FEATURES, variables)}`;
+    return `${NEW_API}/MSIb-PAcnu9OBUe56f_DHQ/NotificationsTimeline?${generateParams(NOTIFICATIONS_TIMELINE_FEATURES, variables)}`;
 }
 
 function notificationsTimeline(data) {
@@ -1371,10 +1373,374 @@ function generateParams(features, variables, fieldToggles) {
     return params.toString();
 }
 
+// ---- GraphQL operations: query ids and features from x.com's own bundles ----------------------
+// X retires GraphQL query ids without notice (HomeLatestTimeline changed on 2026-10-23 and again on
+// 2026-10-24) and adds `features` keys that fail a request when missing. x.com's bundles declare
+// every operation as
+//   {queryId:"…",operationName:"…",operationType:"query",metadata:{featureSwitches:[…],fieldToggles:[…]}}
+// where featureSwitches is exactly the key set x.com sends as `features` (checked on 13 operations in
+// HARs), and the logged-in page HTML names the bundles (the main.<hash>.js script tag and the webpack
+// chunk name / hash maps) and carries the user's switch values
+// (window.__INITIAL_STATE__.featureSwitch.user.config; a key missing there is sent as false).
+// At startup the page is fetched; when main.js changed since the last run, main.js and the chunks
+// that hold the operations below are fetched, and { id, features, chunk } per operation plus the
+// switch values are kept in localStorage. Every GraphQL request a route builds then gets x.com's
+// query id, and its `features` rebuilt from the declared keys, on the way out (applyGraphqlRegistryUrl
+// and applyGraphqlRegistryBody in the XHR Proxy's send). The hard-coded ids and features in the routes
+// stay as the fallback: an operation nothing declared goes out unchanged. fieldToggles stay the
+// route's own (x.com sends fewer than it declares). A 400 or 404 on a known operation forces a
+// re-read, at most once per 10 minutes.
+// localStorage.OTDgraphqlRegistry: "off" leaves every request alone, "ids" swaps only the query id.
+const GRAPHQL_REGISTRY_KEY = "OTDgraphqlOperations";
+// Operation -> fragments of chunk names to try, in order, when main.js does not declare it. On
+// 2026-10-24 main.js held 13 of these; HomeLatestTimeline sat in
+// shared~bundle.Compose~bundle.HomeTimeline~bundle.LoggedInMain (29 KB), NotificationsTimeline in
+// bundle.Notifications (137 KB), the List operations in a shared~JetfuelWrapper~bundle.AudioSpaceDetail~…
+// chunk (179 KB) whose name says nothing about lists, Bookmarks in a 755 KB
+// shared~bundle.Birdwatch~bundle.Compose~bundle.Display~… chunk. The chunk an operation was last
+// found in is tried first.
+const GRAPHQL_OPERATIONS = {
+    HomeLatestTimeline: ["HomeTimeline"],
+    NotificationsTimeline: ["bundle.Notifications", "Notifications"],
+    CreateTweet: [],
+    CreateRetweet: [],
+    DeleteRetweet: [],
+    DeleteTweet: [],
+    FavoriteTweet: [],
+    UnfavoriteTweet: [],
+    TweetDetail: [],
+    SearchTimeline: [],
+    Likes: [],
+    UserTweetsAndReplies: [],
+    UserByRestId: [],
+    UserByScreenName: [],
+    UsersByRestIds: [],
+    ListLatestTweetsTimeline: ["JetfuelWrapper~bundle.AudioSpaceDetail", "JetfuelWrapper"],
+    ListMembers: ["JetfuelWrapper~bundle.AudioSpaceDetail", "JetfuelWrapper"],
+    ListAddMember: ["JetfuelWrapper~bundle.AudioSpaceDetail", "JetfuelWrapper"],
+    ListRemoveMember: ["JetfuelWrapper~bundle.AudioSpaceDetail", "JetfuelWrapper"],
+    Bookmarks: ["bundle.Birdwatch~bundle.Compose~bundle.Display", "bundle.Bookmarks"],
+};
+// One read fetches at most this many chunks / bytes besides main.js, and tries at most
+// `perOperation` chunks for one operation. An operation still missing keeps its saved entry, if any,
+// else the route's id.
+const GRAPHQL_DISCOVERY_BUDGET = { chunks: 12, bytes: 4e6, perOperation: 4 };
+// A saved table missing an operation is read again this often even when main.js is unchanged.
+const GRAPHQL_INCOMPLETE_RETRY = 24 * 60 * 60 * 1000;
+const GRAPHQL_REFRESH_INTERVAL = 10 * 60 * 1000;
+// GraphQL requests in the first seconds after startup wait, briefly, for the first read.
+const GRAPHQL_STARTUP_WAIT = { within: 15000, atMost: 4000 };
+const GRAPHQL_DECLARATION = /queryId:"([\w-]{22})",operationName:"(\w+)",operationType:"(?:query|mutation)",metadata:\{featureSwitches:\[([^\]]*)\]/g;
+
+const graphqlRegistry = {
+    table: validGraphqlTable(readStoredJSON(GRAPHQL_REGISTRY_KEY)),
+    pending: null, // the read in flight
+    lastRefresh: 0, // when a 400 / 404 last forced one
+    noted: new Set(), // differences to the routes' values already logged this session
+};
+
+function validGraphqlTable(table) {
+    const object = (v) => v && typeof v === "object";
+    return object(table) && typeof table.main === "string" && object(table.ops) && object(table.values) ? table : null;
+}
+
+function graphqlRegistryMode() {
+    return localStorage.OTDgraphqlRegistry;
+}
+
+// The logged-in x.com page. challenge.js reads the same page; whichever asks first fetches it.
+function homepageHtml(fresh) {
+    const shared = typeof window === "object" && window ? window : globalThis;
+    if (fresh) delete shared.OTDhomepage;
+    if (!shared.OTDhomepage) {
+        shared.OTDhomepage = fetch(`https://${location.hostname}/`).then((res) => res.text());
+        shared.OTDhomepage.catch(() => {
+            delete shared.OTDhomepage;
+        });
+    }
+    return shared.OTDhomepage;
+}
+
+async function fetchText(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+    return res.text();
+}
+
+// The webpack runtime in the page maps chunk numbers to names and to hashes:
+//   ({346:"bundle.X",…})[e]||e)+"."+({346:"1c7c3aca047cef3f",…})[e]+"a.js"
+function chunkUrlsFromHtml(html) {
+    const names = [];
+    const hashes = new Map();
+    for (const m of html.matchAll(/(\d+):"([^"\\]+)"/g)) {
+        if (/^[0-9a-f]{16}$/.test(m[2])) {
+            if (!hashes.has(m[1])) hashes.set(m[1], m[2]);
+        } else {
+            names.push(m);
+        }
+    }
+    const urls = {};
+    for (const [, num, name] of names) {
+        const hash = hashes.get(num);
+        if (hash && !urls[name]) urls[name] = `https://abs.twimg.com/responsive-web/client-web/${name}.${hash}a.js`;
+    }
+    return urls;
+}
+
+function declaredOperations(source, wanted) {
+    const found = {};
+    for (const m of source.matchAll(GRAPHQL_DECLARATION)) {
+        const [, id, name, switches] = m;
+        if (!wanted.has(name) || found[name]) continue;
+        try {
+            found[name] = { id, features: switches ? JSON.parse(`[${switches}]`) : [] };
+        } catch (e) {
+            // not the shape we know; another chunk, or the route's fallback, serves this operation
+        }
+    }
+    return found;
+}
+
+function featureValuesFromHtml(html, keys) {
+    let config;
+    try {
+        config = extractAssignedJSON(html, "window.__INITIAL_STATE__")?.featureSwitch?.user?.config;
+    } catch (e) {
+        console.warn("OldTweetDeck: could not read x.com's feature switches", e);
+        return null;
+    }
+    if (!config || typeof config !== "object") return null;
+    const values = {};
+    for (const key of keys) {
+        const value = config[key]?.value;
+        if (typeof value === "boolean") values[key] = value;
+    }
+    return values;
+}
+
+function graphqlChunkCandidates(op, chunkNames, remembered) {
+    const ordered = [];
+    if (remembered && remembered !== "main" && chunkNames.includes(remembered)) ordered.push(remembered);
+    for (const hint of GRAPHQL_OPERATIONS[op] || []) {
+        const matching = chunkNames.filter((name) => name.includes(hint)).sort((a, b) => a.length - b.length);
+        for (const name of matching) if (!ordered.includes(name)) ordered.push(name);
+    }
+    return ordered;
+}
+
+async function discoverGraphqlOperations({ force = false } = {}) {
+    const html = await homepageHtml(force);
+    const main = html.match(/https:\/\/abs\.twimg\.com\/responsive-web\/client-web\/main\.\w+\.js/)?.[0];
+    if (!main) throw new Error("the x.com page names no main.js");
+    const saved = graphqlRegistry.table;
+    const wanted = new Set(Object.keys(GRAPHQL_OPERATIONS));
+    const incomplete = saved && [...wanted].some((op) => !saved.ops[op]) && Date.now() - (saved.fetchedAt || 0) > GRAPHQL_INCOMPLETE_RETRY;
+    let ops;
+    if (saved && saved.main === main && !force && !incomplete) {
+        ops = saved.ops;
+    } else {
+        ops = {};
+        const chunkUrls = chunkUrlsFromHtml(html);
+        const chunkNames = Object.keys(chunkUrls);
+        for (const [name, decl] of Object.entries(declaredOperations(await fetchText(main), wanted))) {
+            ops[name] = { ...decl, chunk: "main" };
+        }
+        const budget = { ...GRAPHQL_DISCOVERY_BUDGET };
+        const fetched = new Set();
+        for (const op of wanted) {
+            if (ops[op]) continue;
+            let tries = 0;
+            for (const chunk of graphqlChunkCandidates(op, chunkNames, saved?.ops?.[op]?.chunk)) {
+                if (ops[op] || tries >= budget.perOperation || budget.chunks <= 0 || budget.bytes <= 0) break;
+                if (fetched.has(chunk)) continue;
+                fetched.add(chunk);
+                tries++;
+                budget.chunks--;
+                let text;
+                try {
+                    text = await fetchText(chunkUrls[chunk]);
+                } catch (e) {
+                    console.warn(`OldTweetDeck: could not read x.com's ${chunk}`, e);
+                    continue;
+                }
+                budget.bytes -= text.length;
+                // every wanted operation this chunk declares counts, not only the one looked for
+                for (const [name, decl] of Object.entries(declaredOperations(text, wanted))) {
+                    if (!ops[name]) ops[name] = { ...decl, chunk };
+                }
+            }
+        }
+        // what was not found keeps its last entry, which is at least as new as the route's
+        for (const op of wanted) if (!ops[op] && saved?.ops?.[op]) ops[op] = saved.ops[op];
+    }
+    const keys = new Set();
+    for (const op of Object.values(ops)) for (const key of op.features || []) keys.add(key);
+    const values = featureValuesFromHtml(html, keys) ?? saved?.values ?? {};
+    const table = { main, fetchedAt: Date.now(), ops, values };
+    graphqlRegistry.table = table;
+    try {
+        localStorage[GRAPHQL_REGISTRY_KEY] = JSON.stringify(table);
+    } catch (e) {
+        console.warn("OldTweetDeck: could not save the GraphQL operations", e);
+    }
+    return table;
+}
+
+function startGraphqlDiscovery(reason, options) {
+    if (graphqlRegistryMode() === "off" || typeof fetch !== "function") return null;
+    if (graphqlRegistry.pending) return graphqlRegistry.pending;
+    graphqlRegistry.pending = discoverGraphqlOperations(options).then(
+        (table) => {
+            graphqlRegistry.pending = null;
+            const known = Object.keys(GRAPHQL_OPERATIONS).filter((op) => table.ops[op]).length;
+            console.log(`OldTweetDeck: GraphQL operations read ${reason}: ${known} of ${Object.keys(GRAPHQL_OPERATIONS).length} known, ${table.main.split("/").pop()}`);
+            return table;
+        },
+        (e) => {
+            graphqlRegistry.pending = null;
+            console.warn(`OldTweetDeck: could not read x.com's GraphQL operations ${reason}; using ${graphqlRegistry.table ? "the saved ones" : "the built-in ids"}`, e);
+            return graphqlRegistry.table;
+        }
+    );
+    return graphqlRegistry.pending;
+}
+
+function graphqlOperationOf(url) {
+    const m = /\/i\/api\/graphql\/([\w-]+)\/(\w+)(?=[/?#]|$)/.exec(String(url || ""));
+    return m ? { id: m[1], name: m[2] } : null;
+}
+
+function graphqlFeaturesFor(known, table) {
+    const features = {};
+    for (const key of known.features) features[key] = table.values[key] === true;
+    return features;
+}
+
+// Logged once per operation and session: the cue to refresh a route's hard-coded values.
+function noteGraphqlDifference(key, message) {
+    if (graphqlRegistry.noted.has(key)) return;
+    graphqlRegistry.noted.add(key);
+    console.log(`OldTweetDeck: ${message}`);
+}
+
+function noteFeatureDifference(op, sent, features) {
+    let before;
+    try {
+        before = JSON.parse(sent);
+    } catch (e) {
+        return;
+    }
+    if (!before || typeof before !== "object") return;
+    const added = Object.keys(features).filter((k) => !(k in before));
+    const removed = Object.keys(before).filter((k) => !(k in features));
+    const changed = Object.keys(features).filter((k) => k in before && before[k] !== features[k]);
+    if (!added.length && !removed.length && !changed.length) return;
+    // with the values, so the route's hard-coded features can be brought up to date from the log
+    const part = (label, items) => (items.length ? ` ${label}: ${items.join(", ")}.` : "");
+    noteGraphqlDifference(`${op}:features`, `${op} features differ from the route's.`
+        + part("Added", added.map((k) => `${k}=${features[k]}`))
+        + part("Removed", removed)
+        + part("Other value", changed.map((k) => `${k}: ${before[k]} -> ${features[k]}`)));
+}
+
+// Rewrites xhr.modUrl to x.com's query id and features; true when it changed.
+function applyGraphqlRegistryUrl(xhr) {
+    const mode = graphqlRegistryMode();
+    const table = graphqlRegistry.table;
+    if (mode === "off" || !table) return false;
+    const op = graphqlOperationOf(xhr.modUrl);
+    const known = op && table.ops[op.name];
+    if (!known || typeof known.id !== "string") return false;
+    let url = xhr.modUrl;
+    if (known.id !== op.id) {
+        noteGraphqlDifference(`${op.name}:id`, `${op.name} query id ${op.id} -> ${known.id} (x.com's bundle)`);
+        url = url.replace(`/i/api/graphql/${op.id}/${op.name}`, `/i/api/graphql/${known.id}/${op.name}`);
+    }
+    if (mode !== "ids" && Array.isArray(known.features) && known.features.length) {
+        let parsed = null;
+        try {
+            parsed = new URL(url);
+        } catch (e) {
+            // not a URL we can read; leave the features alone
+        }
+        const sent = parsed?.searchParams.get("features");
+        if (sent) {
+            const features = graphqlFeaturesFor(known, table);
+            noteFeatureDifference(op.name, sent, features);
+            const text = JSON.stringify(features);
+            if (text !== sent) {
+                parsed.searchParams.set("features", text);
+                url = parsed.toString();
+            }
+        }
+    }
+    if (url === xhr.modUrl) return false;
+    xhr.modUrl = url;
+    return true;
+}
+
+// The same for a JSON body: x.com's mutations carry queryId and features there.
+function applyGraphqlRegistryBody(xhr, body) {
+    const mode = graphqlRegistryMode();
+    const table = graphqlRegistry.table;
+    if (mode === "off" || !table || typeof body !== "string" || body[0] !== "{") return body;
+    const op = graphqlOperationOf(xhr.modUrl);
+    const known = op && table.ops[op.name];
+    if (!known || typeof known.id !== "string") return body;
+    let json;
+    try {
+        json = JSON.parse(body);
+    } catch (e) {
+        return body;
+    }
+    if (!json || typeof json !== "object") return body;
+    let changed = false;
+    if (json.queryId && json.queryId !== known.id) {
+        json.queryId = known.id;
+        changed = true;
+    }
+    if (mode !== "ids" && Array.isArray(known.features) && known.features.length && json.features && typeof json.features === "object") {
+        const features = graphqlFeaturesFor(known, table);
+        const sent = JSON.stringify(json.features);
+        noteFeatureDifference(op.name, sent, features);
+        if (JSON.stringify(features) !== sent) {
+            json.features = features;
+            changed = true;
+        }
+    }
+    return changed ? JSON.stringify(json) : body;
+}
+
+async function awaitGraphqlRegistry() {
+    if (!graphqlRegistry.pending || Date.now() - OTD_INIT_TIME > GRAPHQL_STARTUP_WAIT.within) return;
+    await Promise.race([graphqlRegistry.pending, new Promise((resolve) => setTimeout(resolve, GRAPHQL_STARTUP_WAIT.atMost))]);
+}
+
+// A 400 or 404 on a known operation usually means X retired its query id, or wants a feature key
+// the request lacks: read the bundles again, forced, at most once per 10 minutes.
+function graphqlRegistryOnResponse(xhr) {
+    const status = xhr._status || xhr.status;
+    if (status !== 400 && status !== 404) return;
+    const op = graphqlOperationOf(xhr.modUrl);
+    if (!op || !(op.name in GRAPHQL_OPERATIONS)) return;
+    let body = "";
+    try {
+        body = String(xhr.responseText || "").slice(0, 300);
+    } catch (e) {
+        // a response that is not text; the status is what matters
+    }
+    console.warn(`OldTweetDeck: ${status} for GraphQL ${op.name} (${op.id}): ${body}`);
+    const now = Date.now();
+    if (now - graphqlRegistry.lastRefresh < GRAPHQL_REFRESH_INTERVAL) return;
+    graphqlRegistry.lastRefresh = now;
+    startGraphqlDiscovery(`after a ${status} for ${op.name}`, { force: true });
+}
+
+startGraphqlDiscovery("at startup");
+
 function extractAssignedJSON(html, varName = "window.__INITIAL_STATE__") {
     const assignPos = html.indexOf(varName);
     if (assignPos === -1) {
-        console.error(html);
         throw new Error(`Variable ${varName} not found`);
     }
   
@@ -4074,6 +4440,7 @@ XMLHttpRequest = function () {
             this.modUrl = url;
             this.originalUrl = url;
             this.modReqHeaders = {};
+            this.modOpen = { async, username, password };
             this.storage = {};
 
 
@@ -4143,6 +4510,17 @@ XMLHttpRequest = function () {
                         await new Promise(resolve => setTimeout(resolve, 100));
                     }
                 }
+                // x.com's query id and features for this operation, when its bundles were read
+                if (graphqlOperationOf(this.modUrl)) {
+                    await awaitGraphqlRegistry();
+                    if (applyGraphqlRegistryUrl(this) && this.readyState === 1) {
+                        // The raw request was opened with the route's URL: open it again with this
+                        // one. The headers are set below, after this.
+                        const open = this.storage.open || this.modOpen || {};
+                        this.open(this.modMethod || "GET", this.modUrl, open.async ?? true, open.username ?? null, open.password ?? null);
+                    }
+                    parsedUrl = new URL(this.modUrl);
+                }
                 if(window.solveChallenge) {
                     try {
                         this.setRequestHeader('x-client-transaction-id', await solveChallenge(parsedUrl.pathname, method));
@@ -4172,6 +4550,7 @@ XMLHttpRequest = function () {
             if (this.proxyRoute && this.proxyRoute.beforeSendBody) {
                 body = this.proxyRoute.beforeSendBody(this, body);
             }
+            body = applyGraphqlRegistryBody(this, body);
             if(this.proxyRoute && this.proxyRoute.sendHandler) {
                 this.proxyRoute.sendHandler(this, body);
             } else {
@@ -4196,6 +4575,11 @@ XMLHttpRequest = function () {
             }
             if (key === "status" && !xhr._failureChecked && (xhr.readyState === 4 || xhr._readyState === 4)) {
                 xhr._failureChecked = true;
+                try {
+                    graphqlRegistryOnResponse(xhr);
+                } catch (e) {
+                    console.error(e);
+                }
                 try {
                     noteRequestFailure(xhr, failureFromStatus(xhr));
                 } catch (e) {

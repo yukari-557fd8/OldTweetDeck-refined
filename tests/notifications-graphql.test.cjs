@@ -77,7 +77,7 @@ test('both columns ask the GraphQL notifications timeline, with cursors inside v
     const { notifications, mentions } = load();
     for (const route of [notifications, mentions]) {
         const first = prepare(route, 'count=20');
-        assert.ok(first.modUrl.startsWith('https://x.com/i/api/graphql/PV7uQNNsuQhCB2vjo4WJGA/NotificationsTimeline?'), first.modUrl);
+        assert.ok(first.modUrl.startsWith('https://x.com/i/api/graphql/MSIb-PAcnu9OBUe56f_DHQ/NotificationsTimeline?'), first.modUrl);
         assert.deepEqual(params(first).variables, { timeline_type: 'All', count: 20 });
         assert.equal(params(first).features.responsive_web_graphql_timeline_navigation_enabled, true);
         assert.equal(first.opened, first.modUrl);

@@ -32,6 +32,7 @@
 | (フォークで確認) | 通知カラムと Mentions カラムの更新がずれる、Home の更新間隔がばらつく、フォローのまとめ通知で古いフォロワーが上にあふれる | 4d26629 / 017d2a7 / 6522d2c | Phase 6。5 分間の HAR で間隔と 429 が出ないことは確認(2026-10-18)。2 カラムに同時に出ることの目視と、フォロー通知の実機確認は未了 |
 | (フォークで確認) | Better TweetDeck を併用すると、Home などで認証済みのアカウントのバッジが消え、相互フォローバッジが通知・Mentions にしか出ない | a7c4cc5 | Phase 7。相互の行で認証バッジが隠れるのは BTD の仕様で、BTD のカスタム CSS で対処(2026-10-18 に確認) |
 | (機能要望) | カラム設定「Tweet authors」に、相互フォローの相手だけを表示する選択肢が無い | 8d58466 | Phase 8。legacy が `followed_by` を捨てていたので `TwitterUser` に持たせ、「verified users」と同じ作りで「mutual follows」を追加。検索・イベントカラムには出さない。実機確認は問題なし(2026-10-19) |
+| (フォークで確認) | X が GraphQL のクエリ ID を予告なく変える(`HomeLatestTimeline` は 2026-10-23 と 10-24 で別の ID)。features のキーが増えると要求が落ちる | (未コミット) | Phase 9。x.com 本体の JS から ID と features を実行時に拾い、送信直前に差し替える。ハードコードの値は退路。実機確認は問題なし(2026-10-24) |
 
 ---
 
@@ -238,7 +239,7 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 - レート制限は `NotificationsTimeline` が 1500 回 / 15 分で x.com と共有、`all.json` は 180 回 / 15 分で x.com は使っていない。新着の速さは変わらないので、移行は見送った。`all.json` が廃止されたときの切り替え先にはできる。通知の形(`TimelineNotification` の `template.from_users` / `target_objects`、`TimelineTweet` の `tweet_results`)は既存の `legacyUserFromGraph` / `safeParseTweet` で変換できる。引用通知の形は未確認。
 - x.com のフォロー中タブは、放置中にホームを取得しない(3 分半で 0 回)。ピリオドキーでは約 1 秒間隔で取得し、すべて 200。通知は未読数(`ViewerBadgeCounts`)を 30 秒ごとに見るだけ。
 - `HomeLatestTimeline` の枠は GET と POST で別。OTD(GET、当時 `cWF3cqWadLlIXA6KJWhcew`)と x.com の GET(`NmDBT3APtNxDpMqIEauu7A`)は同じ枠を使っているとみられる(推測)。
-- Home のクエリ ID は 2026-10-23 の HAR(フォロー中タブ)に合わせて `hB-6CNtJdReMJny7IPMoQQ` に更新した。x.com は POST で `variables` に `enableRanking: false` と `seenTweetIds`、`fieldToggles` に `withPayments: false` を付け、`features` はリストメンバー取得と同じ 40 項目。枠は 500 回 / 15 分。OTD は GET のまま、`seenTweetIds` は送らない。ユーザーは `legacy` を持たず `core` / `avatar` / `relationship_perspectives` に分かれて返る(Phase 7 の変換で対応済み)。
+- Home のクエリ ID は 2026-10-23 の HAR(フォロー中タブ)に合わせて `hB-6CNtJdReMJny7IPMoQQ` に更新した(翌 10-24 には `KQPfcqQJJqF6M0D77p3JKw` に変わっていた。以後は Phase 9 で自動追従)。x.com は POST で `variables` に `enableRanking: false` と `seenTweetIds`、`fieldToggles` に `withPayments: false` を付け、`features` はリストメンバー取得と同じ 40 項目。枠は 500 回 / 15 分。OTD は GET のまま、`seenTweetIds` は送らない。ユーザーは `legacy` を持たず `core` / `avatar` / `relationship_perspectives` に分かれて返る(Phase 7 の変換で対応済み)。
 - 同じ HAR で、x.com の計測ログは `/i/jot` ではなく `POST /i/api/1.1/flow/timeline.json`(`debug=true&log=[client_event...]`、応答は空の 200、枠 2000 回 / 15 分)に送られていた。タイムラインの取得とは無関係で、OTD は使わない。
 
 ### 6-e. 通知の取得元を GraphQL `NotificationsTimeline` に切り替えた(2026-10-23)
@@ -353,6 +354,49 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 
 ---
 
+## Phase 9: GraphQL のクエリ ID と features を x.com 本体の JS から実行時に取る(実装済み)
+
+**状態: 実装済み。実機確認も問題なし(2026-10-24)。** 変更は `src/interception.js`(レジストリと Proxy の送信経路)、`src/challenge.js`(x.com の HTML 取得を共有)、`tests/graphql-registry.test.cjs`(新規 9 件)。`node --test tests/*.test.cjs` は 114 件通過。
+
+発端: 2026-10-23 に HAR から更新した `HomeLatestTimeline` の ID(`hB-6CNtJdReMJny7IPMoQQ`)が、翌 10-24 には x.com 本体で `KQPfcqQJJqF6M0D77p3JKw` になっていた。ID の更新を人手と GitHub 配信(`injection.js` が main の `interception.js` を読む)に頼ると、X の変更に気づいて push するまで止まる。X は旧 ID をしばらく生かすので(2026-10-24 時点で OTD の 20 操作中 12 の ID が最新と違い、すべて動いていた)、いつ切られるかが読めないのが問題。
+
+### 9-a. 確認した事実(2026-10-23 の HAR と、2026-10-24 の直接取得)
+
+- ログイン済みの `https://x.com/` の HTML(約 320 KB)に、`main.<hash>.js` の script タグ、webpack のチャンク番号→名前と番号→16 桁 hash の 2 つの表(`challenge.js` が `ondemand.s` の hash を取るのに使っているもの)、`window.__INITIAL_STATE__`(`featureSwitch.user.config` に設定 1490 件)が入っている。チャンクの URL は `https://abs.twimg.com/responsive-web/client-web/<名前>.<hash>a.js`。
+- 各操作は JS 内で `{queryId:"…",operationName:"…",operationType:"query|mutation",metadata:{featureSwitches:[…],fieldToggles:[…]}}` と宣言される。HAR にあった 13 操作すべてで `featureSwitches` の鍵集合は x.com が実際に送った `features` と一致。値は `config[鍵].value` と一致(40 個中 39 個。残り 1 個は設定に無く、x.com は false を送っていた)。`fieldToggles` は宣言(9 個)と送信(Home は `withPayments:false` だけ)が一致しないので、呼び出し側の固定値のまま。
+- OTD が使う 20 操作のうち 13 は `main.js`(1.2 MB)にある。`HomeLatestTimeline` は `shared~bundle.Compose~bundle.HomeTimeline~bundle.LoggedInMain`(29 KB)ほか、`NotificationsTimeline` は `bundle.Notifications`(137 KB)、List 系 4 つは `shared~JetfuelWrapper~bundle.AudioSpaceDetail~…`(179 KB。名前に List を含まない)、`Bookmarks` は `shared~bundle.Birdwatch~bundle.Compose~bundle.Display~…`(755 KB)。
+- ログインしていない x.com は別のログアウト用アプリ(`x-web`)を返し、GraphQL の ID を含まない。取得は拡張機能の中(cookie 付き)で行う必要がある。
+- manifest v3 で動いているのは `background3.js` と `ruleset.json` で、abs.twimg.com への fetch を遮断する規則は無い(`background.js` の遮断は v2 の名残で使われていない)。
+
+### 9-b. 仕組み(`src/interception.js` の "GraphQL operations" の節)
+
+- 起動時に `https://x.com/` を取り(`window.OTDhomepage` に Promise を置き、`challenge.js` と 1 回の取得を共有)、`main.js` の URL を保存済みの表(`localStorage.OTDgraphqlOperations`)と比べる。同じなら表をそのまま使い、features の値だけ HTML から更新する。
+- 違えば `main.js` を取り、宣言を正規表現で抜く。無い操作は `GRAPHQL_OPERATIONS` の名前の手がかり(`HomeTimeline`、`bundle.Notifications`、`JetfuelWrapper~bundle.AudioSpaceDetail`、`bundle.Birdwatch~bundle.Compose~bundle.Display` など)に合うチャンクを名前の短い順に取り、見つかるまで続ける。前回見つかったチャンク名を最初に試す。上限はチャンク 12 個・4 MB・1 操作につき 4 個。見つからなかった操作は前回の表の値を残す。
+- 表の形は `{ main, fetchedAt, ops: { <操作>: { id, features: [鍵…], chunk } }, values: { 鍵: 値 } }`。`values` は操作が使う鍵だけ(実データで 45 個、全体 24 KB)。
+- 差し替えは Proxy の `send` の 1 か所で行う。URL の `/i/api/graphql/<id>/<操作>` を表の ID に、クエリの `features` を宣言された鍵と `values` の値(無い鍵は false)で作り直し、変わっていれば生の XHR を新しい URL で `open()` し直す(ヘッダはその後に付くので失われない)。`x-client-transaction-id` は差し替え後のパスで計算する。POST 本文(`queryId` と `features` を持つ JSON)も同様。`fieldToggles` と `variables` は触らない。
+- 表に無い操作、`features` を宣言しない操作(いいね・RT・削除の mutation)は、ルートが組んだまま出る。ハードコードの ID と features はそのまま退路。
+- 起動直後 15 秒以内の GraphQL 要求は、初回の読み取りが終わるのを最大 4 秒待つ(保存済みの表があれば HTML の比較だけなので短い)。
+- 表の操作への応答が 400 か 404 のときは、HTML から取り直して強制的に再読込(10 分に 1 回まで)。応答本文の先頭 300 文字を console に残す。
+- ルートの値と違う ID・鍵の差分は操作ごとに 1 回 console に出す。ハードコードの値を更新する目安になる。
+- `localStorage.OTDgraphqlRegistry = "off"` で何もしない(従来どおり)、`"ids"` で ID だけ差し替える。
+- 計画からの変更点 2 つ。(1) 新規ファイルではなく `interception.js` に入れた: `injection.js` は拡張機能本体にあり GitHub からは更新されないので、新規ファイルを足すと拡張機能を入れ直したユーザーにしか届かない。`interception.js` 内なら push で全員に届く。(2) 呼び出し側 20 か所を書き換えず、送信直前の 1 か所で差し替える: ルートは変更なし、`off` で元の挙動に厳密に戻り、今後ルートが増えても自動で対象になる。
+
+### 9-c. 残課題
+
+- 廃止された ID に X が何を返すか(404 か 400 か、本文の形)は未確認。今は 400 / 404 の両方で再読込を起こし、本文を console に残して形を見る。再試行は付けていない。
+- チャンク名は X の都合で変わる。手がかりに合うチャンクが無ければ、その操作は前回の表の値か既定値に残る。List 系と Bookmarks は共有チャンクの名前に依存していて、変わりやすい。
+- デプロイが変わった起動では約 2.3 MB(`main.js` 1.2 MB とチャンク 4 つ)を取る。同じデプロイなら HTML だけ。
+- `features` の値はログイン中のアカウントの設定で、Teams の act-as 先でも同じ。x.com 本体と同じ挙動。
+- Phase 6 の残課題「Home のクエリ ID」はこれで自動追従になる。ハードコードの既定値は、差分ログを見て時々更新する。2026-10-24 の HAR に合わせて Home を `KQPfcqQJJqF6M0D77p3JKw`、通知を `MSIb-PAcnu9OBUe56f_DHQ`、features を 41 鍵(`responsive_web_made_on_x_label_enabled: false` が増えた)に更新した。同じデプロイの `main.js` は `CreateTweet` を `5CVj-J0FZWyGgJpcjeBJEA` と宣言していたが、要求で確認していないので既定値はそのまま(表が差し替える)。
+
+### Phase 9 のテスト
+
+- 自動テスト(済み): `tests/graphql-registry.test.cjs` に 9 件。宣言の抽出とチャンクの試行順(短い名前から、取れないチャンクは飛ばす、同じチャンクは二度取らない)と保存、同じ `main.js` なら HTML だけ読んで値を更新すること、新しい `main.js` では前回のチャンクから試すこと、Home の要求が新しい ID と features(無い鍵は false)で出て `variables` / `fieldToggles` は残り、transaction id が新しいパスで計算されること、mutation の本文の `queryId` / `features` も差し替わること、`"ids"` と `"off"`、表に無い操作は触らないこと、404 で再読込が 1 回だけ起きること、HTML が取れないときは保存済みの表を使い、表が無ければ何も変えないこと。
+- オフライン確認(2026-10-24、HAR から取り出した実物の HTML と JS 151 本を fetch の代わりに読ませて実行): 20 操作すべてが見つかり(取得は HTML、`main.js`、チャンク 6 本)、`HomeLatestTimeline` の features 40 個は x.com が送った要求と値まで一致、表は 24 KB。
+- 実機(2026-10-24、`OTDalwaysUseLocalFiles` で起動): 初回起動の console に Home の ID が `hB-6…` から `KQPfcqQJJqF6M0D77p3JKw` へ、通知の ID が `PV7u…` から `MSIb-PAcnu9OBUe56f_DHQ` へ差し替わった行と、両方で `responsive_web_made_on_x_label_enabled` が増えた行が出た(通知の ID 変更は人手では気づいていなかった)。2 回目の起動の HAR(35 秒)では、x.com からは HTML だけを取り(`main.js` とチャンクは取り直していない)、Home 9 回・通知 5 回がすべて新しい ID と 41 鍵の features で 200。400 / 404 は無し。`OTDgraphqlRegistry = "off"` の確認は未了。
+
+---
+
 ## 対応しない / できないもの
 
 - **X 側の仕様・運用**: #551(Teams からの投稿で凍結)、#529(X Pro が Premium+ 限定)、#522(検索演算子の制限。upstream 作者も X 側と判断)、#506(DM は新 Chat に移行。upstream 作者が「修正不可能」と明言)、#492(アカウント制限。同系統の #469 は close 済み)、#462 / #510 / #259(Teams 招待。X の delegate 挙動)、#517 / #495(レート制限。Phase 1 で無駄なリクエストを減らして緩和はできる。Phase 6 で通知カラムも残り回数に合わせて減速するようにした)
@@ -368,6 +412,6 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 ## 進め方
 
 - Phase ごとに PR を分け、`tests/` に `node:test` のケースを足す。実行は `node --test tests/*.test.cjs`。
-- Phase 1 から Phase 5 までの実機確認は 2026-10-17 に問題なし。Phase 6 は 2026-10-18 に取得間隔だけ確認し、目視とブックマーク、フォローのまとめ通知(6-d)の確認が残っている。Phase 7 は 2026-10-18 に確認済み。Phase 8 は 2026-10-19 に確認済み。
-- 残りは upstream への PR、Phase 5 で未対応の #321、Phase 6 の残課題(Home のクエリ ID)、Phase 7 の残課題(長文の Re-draft、返信制限の確認)、Phase 8 の残課題(「users I follow」のクライアント側への置き換え)。
+- Phase 1 から Phase 5 までの実機確認は 2026-10-17 に問題なし。Phase 6 は 2026-10-18 に取得間隔だけ確認し、目視とブックマーク、フォローのまとめ通知(6-d)の確認が残っている。Phase 7 は 2026-10-18 に確認済み。Phase 8 は 2026-10-19 に確認済み。Phase 9 は 2026-10-24 に確認済み。
+- 残りは upstream への PR、Phase 5 で未対応の #321、Phase 7 の残課題(長文の Re-draft、返信制限の確認)、Phase 8 の残課題(「users I follow」のクライアント側への置き換え)、Phase 9 の残課題(廃止 ID への応答の形、`off` の実機確認)。Phase 6 の残課題だった Home のクエリ ID は Phase 9 で自動追従になった。
 - upstream へは #554(RTL)、#552(Mentions)、Phase 1(92f0be5 / bfcbdd3)の順で PR を出す。起動ハングの修正は limex 氏の #562 が未マージで close されているので、出すならクレジット付きで出し直す。

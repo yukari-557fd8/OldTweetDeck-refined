@@ -41,7 +41,7 @@ test('mentions are read from the GraphQL notifications timeline, with their own 
     // legacy adds x-act-as-user-id between open() and send(), so the cursor is only picked in beforeSend
     const prepare = (xhr) => { route.beforeRequest(xhr); route.beforeSend(xhr); return xhr; };
     const first = prepare(legacyRequest('count=40'));
-    assert.ok(first.modUrl.startsWith('https://x.com/i/api/graphql/PV7uQNNsuQhCB2vjo4WJGA/NotificationsTimeline?'), first.modUrl);
+    assert.ok(first.modUrl.startsWith('https://x.com/i/api/graphql/MSIb-PAcnu9OBUe56f_DHQ/NotificationsTimeline?'), first.modUrl);
     const variables = (xhr) => JSON.parse(new URL(xhr.modUrl).searchParams.get('variables'));
     assert.deepEqual(variables(first), { timeline_type: 'All', count: 20 });
     assert.equal(first.opened, first.modUrl);
