@@ -431,7 +431,7 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 
 - legacy は `handleSendDm` → `makeTwitterCall` → `TD.net.ajax` で `recipient_ids` を配列のまま渡し、jQuery の `$.param` が `recipient_ids[]=<id>` にする。X の v1.1 はこれを 2026-10 時点で拒否する(10-d)。`flattenArrayParams`(`src/interception.js`、Proxy の `send` で `beforeSendBody` の直後)が、`/1.1/` へのフォーム本文に `key[]=` があればカンマ区切りの `key=a,b` に書き換える。JSON 本文(先頭が `{` / `[`)、`/1.1/` 以外(GraphQL)、該当する鍵の無い本文は触らない。`dm/conversation/{id}/add_participants.json` の `participant_ids` も同じ形なので同時に直るはずだが未確認。
 - テスト: `tests/form-arrays.test.cjs` に 3 件(1 人宛て、複数 ID の結合順、触らない本文)。`node --test tests/*.test.cjs` は 124 件通過。
-- 実機: ユーザーが console から他アカウント宛てに `recipient_ids` を文字列で送って 200 を確認。OTD の書き換え経由の送信は、ローカル反映後にユーザーが配列形式の要求で確認する。
+- 実機: ユーザーが console から他アカウント宛てに `recipient_ids` を文字列で送って 200 を確認。2026-10-25 に DM 作成画面(宛先は typeahead で選択)から 1 通送り、OTD の書き換え後の本文が `recipient_ids=<ID>` になって 200 で届くことを Edge のネットワーク記録で確認(10-d)。
 - 制約: X の DM は E2E 暗号化のある X Chat(`x.com/i/chat`)に移行していて、legacy の `dm/new.json` で送ったメッセージは相手側の X Chat に「暗号化されていないメッセージ」として表示される(2026-10-25 にユーザーが確認)。暗号化された会話の読み書きは legacy の API では扱えない(upstream #506 の「修正不可能」はこの部分)。OTD からの DM は暗号化なしの旧 DM として送受信される、と README などで明示する必要がある。
 - 明示(ユーザーの選択は「送信機能は残して明記する」): README と README_JA の FAQ に項目を足し、作成画面の DM モードでは宛先の下に 1 行("Sent as a classic direct message without end-to-end encryption. Encrypted X Chat conversations are not available in TweetDeck.")を出す。`noteUnencryptedDm`(`src/interception.js`)が legacy の state 読み込み時に `TD.mustaches["compose/docked_compose.mustache"]` の宛先コンテナ末尾へ差し込み、既に描画済みの作成画面にも同じ行を足す。テストは `tests/dm-notice.test.cjs` に 2 件。README_KO は触っていない。
 
@@ -449,7 +449,7 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 - `help/configuration.json`(410)を emulate する。legacy は失敗時に 2016 年の既定値へ落ちていたので壊れてはいなかったが、起動時のエラーと、DM の文字数上限などが既定値のままだった。X が最後に公開していた値(`HELP_CONFIGURATION`: dm_text_character_limit 10000、characters_reserved_per_media 24、photo_size_limit 5 MB、短縮 URL 23)を返す。`photo_size_limit` は legacy が参照していない(アップロード上限の判定には使われない)。
 - Better TweetDeck の返信制限: 実機(2026-10-25、「@メンションだけ」で投稿)で見ると、BTD の要求は `POST https://api.x.com/graphql/`(パスに ID も操作名も無い旧形式)で、本文が `{"variables": "<JSON 文字列>", "queryId": "hb1elGcj6769uT8qVYqtjw"}`。X はこれに 200 `{"data":{"tweet_conversation_control_put":"Done"}}` を返し、投稿には `conversation_control.policy: "ByInvitation"` が付いていた(旧エンドポイントと 2023 年の ID がまだ生きている)。最初に書いた `/graphql/<ID>/ConversationControlChange` を見るルートは一致せず素通ししていたので、`/graphql/` も対象にし、本文から tweet_id と mode を読んで `x.com/i/api/graphql/<現行 ID>/ConversationControlChange` に JSON(`variables` はオブジェクト)で送り、応答をそのまま BTD の要求に返す。x.com 側が "Done" を返さなければ BTD の要求を元のまま送る(`conversationControlChangeOf` / `sendConversationControlChange`)。`ConversationControlChange` はレジストリ(計 24)と写した表にある。
 - 通知のポーリングを cursor-top に変えた(`notificationsPollCursor`)。新着の問い合わせは直前のページの top cursor を付けて送り(x.com 本体と同じ)、10 分ごと(`TOP_RESYNC_INTERVAL`)に先頭ページ全体を読み直す。Phase 2-a の「cursor-top で未読が返らない疑い」は all.json の話で、GraphQL は x.com 本体がこの方式で動いている。`localStorage.OTDnotificationsTopCursor = "0"` で従来の全ページ取得に戻る。all.json ソースは従来どおり。通知と Mentions の共有ページ(6-a)はそのまま効く(両カラムとも同じ cursor-top 応答を受け取る)。
-- カード: X の記事(`article.article_results.result`)に `summary_large_image` カード(題名・冒頭・カバー画像、`https://x.com/i/article/<id>` へのリンク)を付ける(`presentArticle`。本文・RT 先・RT 内の引用)。スペースのカード(`3691233323:audiospace`)は `https://x.com/i/spaces/<id>` への `summary` カードにする。共通の `summaryCard` を足した。どちらも実機のタイムラインに該当する投稿が無く、表示は未確認。
+- カード: X の記事(`article.article_results.result`)に `summary_large_image` カード(題名・冒頭・カバー画像、`https://x.com/i/article/<id>` へのリンク。カバーが無ければ `summary`)を付ける(`presentArticle`。本文・RT 先・RT 内の引用)。スペースのカード(`3691233323:audiospace`)は `https://x.com/i/spaces/<id>` への `summary` カードにする。共通の `summaryCard` を足した。2026-10-25 に実機で両方の表示を確認(10-d)。
 - Home の取得回数は Phase 6 の設計どおり(4 秒の下限、cursor-top で 1 回約 0.8 KB)で、重複は無かった。変更なし。
 - テスト: `tests/spec-followups.test.cjs` に 5 件(help/configuration の emulate、BTD のルートと署名、記事カードと RT、スペースのカード、通知の cursor-top と 10 分の再同期とスイッチ)。`tests/notifications-graphql.test.cjs`、`tests/notifications-route.test.cjs`、`tests/mentions-route.test.cjs` の since poll の期待値を cursor-top に更新。`node --test tests/*.test.cjs` は 138 件通過。
 - 実機(2026-10-25、Edge): 再読込後、`help/configuration.json` の要求は出ず 410 も消えた。通知は初回 11.3 KB(全ページ)、以後 7 秒ごとに 698 バイト(cursor-top)。`topFetches` を 11 分前に書き換えると次の 1 回だけ全ページ(11.3 KB)になり、その後 cursor-top に戻った。ブロック 18 / ミュート 23、カラム 3 本は従来どおり。
@@ -474,9 +474,9 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 
 実機で確認すれば閉じられるもの(ユーザー操作が要る):
 
-- 10-e の DM 送信を OTD の書き換え経由で確認する(配列形式のスニペット、または DM カラムから 1 通)。`recipient_ids` を文字列で送った 200 までは確認済み。
+- ~~10-e の DM 送信を OTD の書き換え経由で確認する~~ → 2026-10-25 にユーザーが DM 作成画面から 1 通送って確認。Edge のネットワーク記録では `POST api.x.com/1.1/dm/new.json` の本文(書き換え後にブラウザが実際に送ったもの)が `recipient_ids=<ID>` のカンマ区切り形式(`recipient_ids[]=` は無し)で 200、応答は `entries[0].message` と `users`。本文の文面は見ていない。これで監査由来の実機確認はすべて済み。
 - ~~10-g の BTD の返信制限~~ → 2026-10-25 に確認。旧形式の要求が X に通って制限が付いていた(10-g 参照)。向け直しのルートは要求の形に合わせて直し、テストで固定。直したルートは、同じ投稿に同じ mode を BTD と同じ形で送り直して確認: `x.com/i/api/graphql/JWeo7tCAhI_HwcuPcL4JrQ/ConversationControlChange` に 1 回出て 200 "Done"、`api.x.com/graphql/` には出ない。
-- 10-g の記事カードとスペースのカード: 該当する投稿がタイムラインに来たときの表示。
+- ~~10-g の記事カードとスペースのカード~~ → 2026-10-25 にユーザーが記事とスペースを作って確認。Home カラムで、記事の投稿には題名と x.com のリンクカード(`https://x.com/i/article/<id>` へのリンク 3 か所、カバー画像の無い記事なので `summary`)、スペースの投稿には「X Space / x.com」のカード(リンクは投稿の t.co 経由でスペースへ)が legacy のカード描画(`hw-card-container`)で出た。カバー画像(2560×1024)を付けた記事は `summary_large_image` になり、カードの上に画像(pbs の 1200×480 版)、下に題名と x.com が出た。
 - ~~10-a の初回起動の 10 秒待ち~~ → 2026-10-25 に `OTDgraphqlOperations` を消して起動して確認。写した表の `main.js` が現行デプロイと同じだったので読み取りは HTML だけで済み(全文の読み直しは起きない設計どおり)、最初の GraphQL 要求は読み取り完了後(起動 2.4 秒)に出た。保存された表は 24 操作。別デプロイでの全文読み直しと 10 秒の上限は未確認のまま。
 - 8-c の「users I follow」: 2026-10-25 に Home カラムの設定を開き、Tweet authors の選択肢が all users / users I follow / specific user… / me… / verified users / mutual follows の順で出ることを確認。
 - 10-b の verify_credentials の代替経路: X が拒否するまで発火しない。応答を差し替えて試すか、死んだときに確認する。
