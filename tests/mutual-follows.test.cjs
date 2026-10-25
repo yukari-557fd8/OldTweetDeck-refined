@@ -110,6 +110,51 @@ test('the quoted tweet is held to every column filter except the mutual one', ()
     assert.equal(calls[2][1], undefined);
 });
 
+// "users I follow" (Phase 8-c): the same construction on `following` alone. It used to be a
+// server-side flag (filters=following) that only Notifications, Mentions and Followers columns
+// offered and that the fork's GraphQL routes ignored.
+test('the choice, the filter type and the form are wired for "following" the same way', () => {
+    for (const marker of [
+        '(TD.vo.Filter.IS_FROM_FOLLOWING = "following")',
+        'case TD.vo.Filter.IS_FROM_VERIFIED: case TD.vo.Filter.IS_FROM_MUTUAL: case TD.vo.Filter.IS_FROM_FOLLOWING:',
+        'case TD.vo.Filter.IS_FROM_FOLLOWING: return this._testBoolean(e.isFromFollowedUser());',
+        'case TD.vo.UserFilter.FROM_FOLLOWING: (e = new TD.vo.Filter(TD.vo.Filter.IS_FROM_FOLLOWING, !0, !0)), t.push(e);',
+        '"following" === e.user.from_type',
+        'withUsersIFollow: !t || o.default.canFilterByUsersIFollow(',
+        't.type !== TD.vo.Filter.IS_FROM_MUTUAL && t.type !== TD.vo.Filter.IS_FROM_FOLLOWING',
+    ]) assert.ok(source.includes(marker), marker);
+});
+
+test('a followed user passes "users I follow", and so do the logged-in user and retweets involving either', () => {
+    const isFollowedByMe = compile('TD.services.TwitterUser.prototype.isFollowedByMe = ');
+    const person = (following, me = false) => ({ following, isMe: () => me, isFollowedByMe });
+    assert.equal(person(true).isFollowedByMe(), true);
+    assert.equal(person(false).isFollowedByMe(), false);
+    assert.equal(person(undefined).isFollowedByMe(), false);
+    const isFromFollowedUser = compile('TD.services.TwitterStatus.prototype.isFromFollowedUser = ');
+    const tweet = (author, retweeter) => ({ user: retweeter || author, getMainTweet: () => ({ user: author }), isFromFollowedUser });
+    const followed = person(true), stranger = person(false), me = person(false, true);
+    assert.equal(tweet(followed).isFromFollowedUser(), true);
+    assert.equal(tweet(stranger).isFromFollowedUser(), false);
+    assert.equal(tweet(person(undefined)).isFromFollowedUser(), false);
+    assert.equal(tweet(stranger, followed).isFromFollowedUser(), true);
+    assert.equal(tweet(followed, stranger).isFromFollowedUser(), true);
+    assert.equal(tweet(me).isFromFollowedUser(), true);
+    const action = (creator) => ({ getCreator: () => creator, isFromFollowedUser: compile('TD.services.TwitterAction.prototype.isFromFollowedUser = ') });
+    assert.equal(action(followed).isFromFollowedUser(), true);
+    assert.equal(action(stranger).isFromFollowedUser(), false);
+    assert.equal(action(me).isFromFollowedUser(), true);
+    assert.equal(compile('TD.services.ChirpBase.prototype.isFromFollowedUser = ').call({}), false);
+});
+
+test('the quoted tweet is not held to "users I follow" either', () => {
+    const calls = [];
+    const TD = { controller: { filterManager: { pass: (chirp, filters) => (calls.push([chirp, filters]), true) } }, vo: { Filter: { IS_FROM_MUTUAL: 'mutual', IS_FROM_FOLLOWING: 'following' } } };
+    const passFilters = compile('TD.services.TwitterStatus.prototype.passFilters = ', { TD });
+    passFilters.call({ quotedTweet: { id: 'quoted' } }, [{ type: 'following' }, { type: 'mutual' }, { type: 'phrase' }]);
+    assert.deepEqual(calls[1][1], [{ type: 'phrase' }]);
+});
+
 test('bundle.js keeps its line count, so the roadmap line numbers stay valid', () => {
     assert.equal(source.split('\n').length - 1, 76373);
 });

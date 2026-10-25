@@ -14686,7 +14686,7 @@ document.body.addEventListener("click", function (e) {
                                       withDateTime: t,
                                       withRetweetsToggle: !0,
                                       withFromList: t,
-                                      withUsersIFollow: o.default.canFilterByUsersIFollow(
+                                      withUsersIFollow: !t || o.default.canFilterByUsersIFollow(
                                           this.column
                                       ), withMutualFollows: !t,
                                       withActionFilter: o.default.isActionsColumn(this.column),
@@ -29719,7 +29719,7 @@ document.body.addEventListener("click", function (e) {
                 case TD.vo.Filter.IS_RETWEET:
                     this.exact = !0;
                     break;
-                case TD.vo.Filter.IS_FROM_VERIFIED: case TD.vo.Filter.IS_FROM_MUTUAL:
+                case TD.vo.Filter.IS_FROM_VERIFIED: case TD.vo.Filter.IS_FROM_MUTUAL: case TD.vo.Filter.IS_FROM_FOLLOWING:
                 case TD.vo.Filter.CHIRP_TYPE:
                     (this.exact = !0), (this.filterTarget = "parent");
             }
@@ -29741,7 +29741,7 @@ document.body.addEventListener("click", function (e) {
             (TD.vo.Filter.HAS_VINE = "has_vine"),
             (TD.vo.Filter.HAS_MEDIA = "has_media"),
             (TD.vo.Filter.HAS_LINK = "has_link"),
-            (TD.vo.Filter.IS_FROM_VERIFIED = "verified"), (TD.vo.Filter.IS_FROM_MUTUAL = "mutual"),
+            (TD.vo.Filter.IS_FROM_VERIFIED = "verified"), (TD.vo.Filter.IS_FROM_MUTUAL = "mutual"), (TD.vo.Filter.IS_FROM_FOLLOWING = "following"),
             (TD.vo.Filter.CHIRP_TYPE = "chirp_type"),
             (TD.vo.Filter.LOCATION = "location"),
             (TD.vo.Filter.SINCE_TIME = "since_time"),
@@ -29786,7 +29786,7 @@ document.body.addEventListener("click", function (e) {
                     case TD.vo.Filter.IS_RETWEET:
                         return this._testBoolean(e.isRetweetedStatus());
                     case TD.vo.Filter.IS_FROM_VERIFIED:
-                        return this._testBoolean(e.isFromVerifiedUser()); case TD.vo.Filter.IS_FROM_MUTUAL: return this._testBoolean(e.isFromMutualUser());
+                        return this._testBoolean(e.isFromVerifiedUser()); case TD.vo.Filter.IS_FROM_MUTUAL: return this._testBoolean(e.isFromMutualUser()); case TD.vo.Filter.IS_FROM_FOLLOWING: return this._testBoolean(e.isFromFollowedUser());
                     case TD.vo.Filter.HAS_IMAGE:
                         return this._testBoolean(e.hasImage());
                     case TD.vo.Filter.HAS_VIDEO:
@@ -30420,7 +30420,7 @@ document.body.addEventListener("click", function (e) {
                         (e = new TD.vo.Filter(TD.vo.Filter.SENDER, this.from_name, !0)), t.push(e);
                         break;
                     case TD.vo.UserFilter.FROM_VERIFIED:
-                        (e = new TD.vo.Filter(TD.vo.Filter.IS_FROM_VERIFIED, !0, !0)), t.push(e); break; case TD.vo.UserFilter.FROM_MUTUAL: (e = new TD.vo.Filter(TD.vo.Filter.IS_FROM_MUTUAL, !0, !0)), t.push(e);
+                        (e = new TD.vo.Filter(TD.vo.Filter.IS_FROM_VERIFIED, !0, !0)), t.push(e); break; case TD.vo.UserFilter.FROM_MUTUAL: (e = new TD.vo.Filter(TD.vo.Filter.IS_FROM_MUTUAL, !0, !0)), t.push(e); break; case TD.vo.UserFilter.FROM_FOLLOWING: (e = new TD.vo.Filter(TD.vo.Filter.IS_FROM_FOLLOWING, !0, !0)), t.push(e);
                 }
                 return t;
             });
@@ -37462,7 +37462,7 @@ document.body.addEventListener("click", function (e) {
             }),
             (TD.services.ChirpBase.prototype.isFromVerifiedUser = function () {
                 return !1;
-            }), (TD.services.ChirpBase.prototype.isFromMutualUser = function () { return !1; }),
+            }), (TD.services.ChirpBase.prototype.isFromMutualUser = function () { return !1; }), (TD.services.ChirpBase.prototype.isFromFollowedUser = function () { return !1; }),
             (TD.services.ChirpBase.msFudge = 0),
             (TD.services.ChirpBase.prototype.fudgeCreatedTime = function (e) {
                 var t = TD.services.ChirpBase.msFudge;
@@ -38217,7 +38217,7 @@ document.body.addEventListener("click", function (e) {
             (TD.services.TwitterStatus.prototype.passFilters = function (e) {
                 return (
                     TD.controller.filterManager.pass(this, e) &&
-                    (!this.quotedTweet || TD.controller.filterManager.pass(this.quotedTweet, e && e.filter(function (t) { return t.type !== TD.vo.Filter.IS_FROM_MUTUAL; })))
+                    (!this.quotedTweet || TD.controller.filterManager.pass(this.quotedTweet, e && e.filter(function (t) { return t.type !== TD.vo.Filter.IS_FROM_MUTUAL && t.type !== TD.vo.Filter.IS_FROM_FOLLOWING; })))
                 );
             }),
             (TD.services.TwitterStatus.prototype.getFilterableText = function () {
@@ -38407,7 +38407,7 @@ document.body.addEventListener("click", function (e) {
             }),
             (TD.services.TwitterStatus.prototype.isFromVerifiedUser = function () {
                 return this.getMainTweet().user.isVerified;
-            }), (TD.services.TwitterStatus.prototype.isFromMutualUser = function () { var e = this.user, t = this.getMainTweet().user; return e.isMe() || t.isMe() || e.isMutualFollow() || t.isMutualFollow(); }),
+            }), (TD.services.TwitterStatus.prototype.isFromMutualUser = function () { var e = this.user, t = this.getMainTweet().user; return e.isMe() || t.isMe() || e.isMutualFollow() || t.isMutualFollow(); }), (TD.services.TwitterStatus.prototype.isFromFollowedUser = function () { var e = this.user, t = this.getMainTweet().user; return e.isMe() || t.isMe() || e.isFollowedByMe() || t.isFollowedByMe(); }),
             (TD.services.TwitterStatus.prototype.hasImage = function () {
                 return (
                     null === this._hasImage &&
@@ -40798,7 +40798,7 @@ document.body.addEventListener("click", function (e) {
             }),
             (TD.services.TwitterUser.prototype.isMe = function () {
                 return this.account.getUserID() == this.id;
-            }), (TD.services.TwitterUser.prototype.isMutualFollow = function () { return Boolean(this.following && this.followedBy); }),
+            }), (TD.services.TwitterUser.prototype.isMutualFollow = function () { return Boolean(this.following && this.followedBy); }), (TD.services.TwitterUser.prototype.isFollowedByMe = function () { return Boolean(this.following); }),
             (TD.services.TwitterUser.prototype.isBlockingOrMuting = function () {
                 return this.blocking || this.muting;
             }),
@@ -41419,7 +41419,7 @@ document.body.addEventListener("click", function (e) {
             }),
             (TD.services.TwitterAction.prototype.isFromVerifiedUser = function () {
                 return this.getCreator().isVerified;
-            }), (TD.services.TwitterAction.prototype.isFromMutualUser = function () { var e = this.getCreator(); return e.isMe() || e.isMutualFollow(); }),
+            }), (TD.services.TwitterAction.prototype.isFromMutualUser = function () { var e = this.getCreator(); return e.isMe() || e.isMutualFollow(); }), (TD.services.TwitterAction.prototype.isFromFollowedUser = function () { var e = this.getCreator(); return e.isMe() || e.isFollowedByMe(); }),
             (TD.services.TwitterAction.prototype.getTargetUsers = function () {
                 throw new Error("TwitterAction.getTargetUsers not implemented");
             });
