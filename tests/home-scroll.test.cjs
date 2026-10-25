@@ -104,8 +104,8 @@ test('a conversation module keeps older tweets only where the page reaches, in t
     const timelineCursor = vm.runInContext('timelineCursor', ctx);
     for (const id of ['50', '45', '40', '35', '30']) {
         assert.equal(timelineCursor('home-42', id, 'bottom'), 'BOT');
-        assert.equal(timelineCursor('home-42', id, 'top'), 'TOP');
     }
+    assert.equal(vm.runInContext('latestTopCursor', ctx)('home-42'), 'TOP');
 });
 
 test('a poll keeps a new reply but not the older tweets of its conversation', () => {
@@ -153,7 +153,7 @@ test('a 200 whose body is only a GraphQL error is delivered as a failed request'
     assert.deepEqual(Array.from(route(ctx, HOME).afterRequest({ storage: { user_id: '42' }, responseText: '{"data":{}}' })), []);
 });
 
-test('since polls use the page cursor and resync from the top every ten minutes', async () => {
+test("since polls use the feed's latest top cursor and resync from the top every ten minutes", async () => {
     const ctx = load();
     const first = await homeRequest(ctx, 'count=40', '42');
     first.xhr.respond(200, page([entry('30'), entry('20'), cursor('top', 'TOP1'), cursor('bottom', 'BOT1')]));
@@ -219,4 +219,92 @@ test('list timelines drop conversation tweets older than the page, map every id 
     assert.equal(unknown.opened, undefined);
     assert.equal(unknown._status, 503);
     assert.equal(unknown.storage.cancelled, true);
+});
+
+test('since polls carry the Top cursor of the latest top-of-timeline answer, even one without tweets', async () => {
+    const ctx = load();
+    const first = await homeRequest(ctx, 'count=40', '42');
+    first.xhr.respond(200, page([entry('30'), entry('20'), cursor('top', 'TOP1'), cursor('bottom', 'BOT1')]));
+    // legacy polls with since_id = its second-newest chirp; the cursor is the feed's latest, not that chirp's page's
+    const empty = await homeRequest(ctx, 'count=40&since_id=20', '42');
+    assert.equal(cursorIn(empty.xhr), 'TOP1');
+    empty.xhr.respond(200, page([cursor('top', 'TOP2'), cursor('bottom', 'BOT2')]));
+    assert.deepEqual(ids(empty.loaded.text), []);
+    const one = await homeRequest(ctx, 'count=40&since_id=20', '42');
+    assert.equal(cursorIn(one.xhr), 'TOP2');
+    one.xhr.respond(200, page([entry('40'), cursor('top', 'TOP3'), cursor('bottom', 'BOT3')]));
+    assert.deepEqual(ids(one.loaded.text), ['40']);
+    // after a single new tweet since_id is still 30: the poll no longer re-reads 40 with the first page's cursor
+    assert.equal(cursorIn((await homeRequest(ctx, 'count=40&since_id=30', '42')).xhr), 'TOP3');
+    // a page fetched by scrolling down carries a Top cursor too; it does not count
+    const older = await homeRequest(ctx, 'count=40&max_id=19', '42');
+    assert.equal(cursorIn(older.xhr), 'BOT1');
+    older.xhr.respond(200, page([entry('10'), cursor('top', 'DEEP'), cursor('bottom', 'BOT0')]));
+    assert.deepEqual(ids(older.loaded.text), ['10']);
+    assert.equal(cursorIn((await homeRequest(ctx, 'count=40&since_id=30', '42')).xhr), 'TOP3');
+    assert.equal(cursorIn((await homeRequest(ctx, 'count=40&max_id=9', '42')).xhr), 'BOT0');
+});
+
+// Legacy's side of a posted tweet: the account's client converts the JSON it gets back, and the
+// poller of the account's Home feed takes chirps that arrive outside a request.
+function legacyHome(pollers, account = '42') {
+    const feeds = pollers.map((_, i) => ({ getType: () => 'home', getAccountKey: () => `twitter:${account}`, getKey: () => 'feed' + i }));
+    return { controller: {
+        columnManager: { getAll: () => ({ col: { getFeeds: () => feeds } }) },
+        feedManager: { getPoller: (key) => pollers[Number(key.slice(4))] },
+        clients: { getClient: (key) => (key === `twitter:${account}` ? { processTweet: (t) => ({ id: t.id_str, text: t.full_text }) } : null) },
+    } };
+}
+const homePoller = () => ({ isInitialLoad: false, accepted: [], acceptContentedChirps(chirps) { this.accepted.push(...chirps); } });
+const ownTweet = (id, legacyExtra = {}) => {
+    const result = tweetResult(id);
+    result.core = { user_results: { result: author('42') } };
+    Object.assign(result.legacy, { user_id_str: '42' }, legacyExtra);
+    return result;
+};
+const created = (result) => JSON.stringify({ data: { create_tweet: { tweet_results: { result } } } });
+const POST = '/1.1/statuses/update.json';
+
+test("a tweet posted from TweetDeck shows in its account's Home at once, once, and the poll does not repeat it", () => {
+    const poller = homePoller();
+    const ctx = load(legacyHome([poller]));
+    const home = route(ctx, HOME);
+    home.afterRequest({ storage: { user_id: '42' }, responseText: page([entry('30'), entry('20'), cursor('top', 'TOP1'), cursor('bottom', 'BOT1')]) });
+    const xhr = { storage: {}, responseText: created(ownTweet('70')) };
+    const answer = route(ctx, POST).afterRequest(xhr);
+    assert.equal(answer.id_str, '70');
+    assert.equal(answer.user.id_str, '42');
+    assert.deepEqual(poller.accepted, [{ id: '70', text: 'tweet 70' }]);
+    // legacy reads responseText more than once
+    assert.equal(route(ctx, POST).afterRequest(xhr), answer);
+    assert.equal(poller.accepted.length, 1);
+    // the poll that returns it a few seconds later hands it over again for legacy to replace in place by id ...
+    const polled = home.afterRequest({ storage: { user_id: '42', since_id: '30' }, responseText: page([entry('70'), cursor('top', 'TOP2')]) });
+    assert.deepEqual(Array.from(polled, t => t.id_str), ['70']);
+    assert.equal(vm.runInContext('latestTopCursor', ctx)('home-42'), 'TOP2');
+    // ... and a conversation module that brings it back is trimmed like any tweet the column already shows
+    const threaded = home.afterRequest({ storage: { user_id: '42', since_id: '30' }, responseText: page([conversation(['70']), cursor('top', 'TOP3')]) });
+    assert.deepEqual(Array.from(threaded, t => t.id_str), []);
+    // scrolling down from it still finds a cursor
+    assert.equal(vm.runInContext('timelineCursor', ctx)('home-42', '70', 'bottom'), 'BOT1');
+});
+
+test("a reply, another account's Home, a poller without its first page and no legacy leave the tweet to the poll", () => {
+    const cases = [
+        ['reply', () => { const p = homePoller(); return [p, load(legacyHome([p])), ownTweet('71', { in_reply_to_status_id_str: '5' })]; }],
+        ['other account', () => { const p = homePoller(); return [p, load(legacyHome([p], '43')), ownTweet('72')]; }],
+        ['first page pending', () => { const p = homePoller(); p.isInitialLoad = true; return [p, load(legacyHome([p])), ownTweet('73')]; }],
+        ['no legacy', () => [homePoller(), load(), ownTweet('74')]],
+    ];
+    for (const [name, make] of cases) {
+        const [poller, ctx, result] = make();
+        const answer = route(ctx, POST).afterRequest({ storage: {}, responseText: created(result) });
+        assert.equal(answer.id_str, result.rest_id, name);
+        assert.deepEqual(poller.accepted, [], name);
+        // not marked seen: even inside a conversation module the poll delivers it
+        const polled = route(ctx, HOME).afterRequest({ storage: { user_id: '42', since_id: '30' }, responseText: page([
+            conversation([result.rest_id]), cursor('top', 'TOP'),
+        ]) });
+        assert.deepEqual(Array.from(polled, t => t.id_str), [result.rest_id], name);
+    }
 });

@@ -1728,18 +1728,25 @@ function watchStartup() {
 
 // ---- timeline pages and cursors ---------------------------------------------------------------
 
-// One record per page a timeline route handed to legacy: the ids it contained and the cursors X
-// returned with it. Legacy derives max_id / since_id from whichever chirp sits at the edge of its
-// column, so every id of a page has to resolve to that page's cursors, not just the one at the end.
+// One record per page a timeline route handed to legacy: the ids it contained and the bottom cursor
+// X returned with it. Legacy derives max_id from whichever chirp sits at the bottom of its column,
+// so every id of a page has to resolve to that page's cursor, not just the one at the end.
 const TIMELINE_PAGE_LIMIT = 300;
 const timelinePages = new Map();
 
-function rememberTimelinePage(feedKey, tweets, bottom, top) {
-    if (!tweets.length || (!bottom && !top)) return;
+function rememberTimelinePage(feedKey, tweets, bottom) {
+    if (!tweets.length || !bottom) return;
     let pages = timelinePages.get(feedKey);
     if (!pages) timelinePages.set(feedKey, (pages = []));
-    pages.push({ ids: new Set(tweets.map((t) => t.id_str)), bottom, top });
+    pages.push({ ids: new Set(tweets.map((t) => t.id_str)), bottom });
     if (pages.length > TIMELINE_PAGE_LIMIT) pages.splice(0, pages.length - TIMELINE_PAGE_LIMIT);
+}
+
+// An id legacy got outside a page (an own tweet shown at once) is filed with the newest page, so
+// that a max_id request from it still finds a bottom cursor.
+function fileWithLatestPage(feedKey, id) {
+    const pages = timelinePages.get(feedKey);
+    if (pages && pages.length) pages[pages.length - 1].ids.add(id);
 }
 
 function timelinePageOf(feedKey, tweetId) {
@@ -1819,6 +1826,45 @@ function rememberHomeTweet(user_id, id) {
     return true;
 }
 
+// ---- own tweets reach Home at once --------------------------------------------------------------
+
+// X's Home lists a tweet 3 to 7 s after CreateTweet has answered (HAR of 2026-10-25: the poll 3 s
+// after posting had nothing, the one 7 s after had the tweet), and legacy never adds the tweet it
+// just sent to a column: makeTwitterApiCall ignores the processAsStreamData option its callers
+// pass, FeedPoller.acceptStreamChirps is empty, and the dataTweetSent handlers only keep stats and
+// reset the composer. x.com's own client inserts the posted tweet itself. Do the same: hand the
+// CreateTweet result to every Home poller of the posting account through the client's own
+// conversion and the entry point legacy has for chirps that arrive outside a request. The poll that
+// returns it a few seconds later hands it over again, as for any overlap: legacy replaces it in
+// place by id. Mark it seen all the same, as the Home route does for every tweet it hands over, so a
+// conversation module that brings it back later is trimmed like any tweet the column already shows.
+// Replies are left to the poll (whether Home lists them is X's call), and so is a poller still
+// waiting for its first page. Without legacy, or with its internals changed, nothing happens and
+// the poll delivers.
+function showOwnTweetInHome(tweet) {
+    const user_id = tweet?.user?.id_str;
+    if (!user_id || !tweet.id_str || tweet.in_reply_to_status_id_str) return false;
+    let shown = false;
+    try {
+        const client = TD.controller.clients.getClient(`twitter:${user_id}`);
+        if (typeof client?.processTweet !== "function") return false;
+        for (const poller of feedPollers(user_id, "home")) {
+            if (poller.isInitialLoad || typeof poller.acceptContentedChirps !== "function") continue;
+            const chirp = client.processTweet(tweet);
+            if (!chirp) break;
+            poller.acceptContentedChirps([chirp]);
+            shown = true;
+        }
+    } catch (e) {
+        // TD not ready or its internals changed: the tweet arrives with the next poll instead.
+    }
+    if (shown) {
+        rememberHomeTweet(user_id, tweet.id_str);
+        fileWithLatestPage(`home-${user_id}`, tweet.id_str);
+    }
+    return shown;
+}
+
 // A cursor-top poll only returns what X files above that cursor. Every so often poll the top of
 // the timeline without a cursor instead, so a stale cursor (or anything X skipped) can't keep a
 // column frozen; legacy drops the duplicates by id.
@@ -1831,6 +1877,23 @@ function topFetchDue(feedKey) {
 
 function noteTopFetch(feedKey) {
     topFetches[feedKey] = Date.now();
+}
+
+// The cursor a poll for new tweets carries. X's Top cursor names the newest entry the answer listed
+// (decoded: a time stamp and that entry's id; x.com polls with the one from its last answer, and X
+// still returns a tweet filed late as long as it is newer than that entry). Legacy polls with
+// since_id = its second-newest chirp, and the Top cursor of that chirp's page made X re-send every
+// tweet above the page on each poll until two newer ones had arrived: after a single new tweet, 4 KB
+// a poll instead of 1 KB, which legacy then replaced in place by id (HAR of 2026-10-25). So keep the
+// Top cursor of the latest top-of-timeline answer, with or without tweets, and poll with that one.
+// Pages reached by scrolling down carry a Top cursor too; those do not count.
+function rememberTopCursor(feedKey, entries) {
+    const top = findCursor(entries, "top");
+    if (top) cursors[`${feedKey}-top`] = top;
+}
+
+function latestTopCursor(feedKey) {
+    return cursors[`${feedKey}-top`];
 }
 
 // Query id, features and variables are what x.com's Following tab sent on 2026-10-24 (HAR; the id
@@ -2895,22 +2958,28 @@ function markNotificationUsers(go) {
     for (const user of Object.values(go?.users || {})) markVerified(user);
 }
 
-function notificationPollers(user_id) {
+// Legacy's pollers of one feed type for one account, through the columns that show them.
+function feedPollers(user_id, feedType) {
     const pollers = [];
     try {
         const accountKey = `twitter:${user_id}`;
         const columns = TD.controller.columnManager.getAll();
         for (const key in columns) {
             for (const feed of columns[key].getFeeds()) {
-                if (feed.getType() !== "interactions" || feed.getAccountKey() !== accountKey) continue;
+                if (feed.getType() !== feedType || feed.getAccountKey() !== accountKey) continue;
                 const poller = TD.controller.feedManager.getPoller(feed.getKey());
                 if (poller && !pollers.includes(poller)) pollers.push(poller);
             }
         }
     } catch (e) {
-        // TD not ready or its internals changed: notificationDeliveryFilter falls back to the session-wide set.
+        // TD not ready or its internals changed: notificationDeliveryFilter falls back to the
+        // session-wide set, showOwnTweetInHome to the next poll.
     }
     return pollers;
+}
+
+function notificationPollers(user_id) {
+    return feedPollers(user_id, "interactions");
 }
 
 // Every Notifications column polls through the same route, and one account can have several of
@@ -3250,7 +3319,7 @@ const proxyRoutes = [
                 }
                 xhr.storage.requested_id = requested;
             } else if (since_id && !topFetchDue(feedKey)) {
-                cursor = timelineCursor(feedKey, since_id, "top");
+                cursor = latestTopCursor(feedKey);
                 if (!cursor) noteTopFetch(feedKey);
             } else {
                 noteTopFetch(feedKey);
@@ -3300,6 +3369,7 @@ const proxyRoutes = [
             }
             const user_id = xhr.storage.user_id;
             const feedKey = `home-${user_id}`;
+            if (!xhr.storage.max_id) rememberTopCursor(feedKey, entries);
             let tweets = [];
             let threads = [];
             for (let e of entries) {
@@ -3364,7 +3434,7 @@ const proxyRoutes = [
             for (let tweet of tweets) {
                 rememberHomeTweet(user_id, tweet.id_str);
             }
-            rememberTimelinePage(feedKey, tweets, bottomCursor, findCursor(entries, "top"));
+            rememberTimelinePage(feedKey, tweets, bottomCursor);
 
             xhr.storage.data = tweets;
 
@@ -3399,7 +3469,7 @@ const proxyRoutes = [
                         xhr.storage.missingCursor = true;
                     }
                 } else if (since_id && !topFetchDue(feedKey)) {
-                    const cursor = timelineCursor(feedKey, since_id, "top");
+                    const cursor = latestTopCursor(feedKey);
                     if (cursor) {
                         variables.cursor = cursor;
                         xhr.storage.cursor = true;
@@ -3497,6 +3567,7 @@ const proxyRoutes = [
             tweets.push(...threadTweetsInRange(tweets, threads, xhr.storage.since_id));
 
             const feedKey = `list-${xhr.storage.list_id}`;
+            if (!xhr.storage.max_id) rememberTopCursor(feedKey, list);
             const bottomCursor = findCursor(list, "bottom");
             if (tweets.length === 0) {
                 if (xhr.storage.requested_id && bottomCursor) {
@@ -3505,7 +3576,7 @@ const proxyRoutes = [
                 return tweets;
             }
             sortNewestFirst(tweets);
-            rememberTimelinePage(feedKey, tweets, bottomCursor, findCursor(list, "top"));
+            rememberTimelinePage(feedKey, tweets, bottomCursor);
 
             return tweets;
         },
@@ -3570,7 +3641,7 @@ const proxyRoutes = [
                         xhr.storage.missingCursor = true;
                     }
                 } else if (since_id && !topFetchDue(feedKey)) {
-                    const cursor = timelineCursor(feedKey, since_id, "top");
+                    const cursor = latestTopCursor(feedKey);
                     if (cursor) {
                         variables.cursor = cursor;
                         xhr.storage.cursor = true;
@@ -3667,6 +3738,7 @@ const proxyRoutes = [
             tweets.push(...threadTweetsInRange(tweets, threads, xhr.storage.since_id));
 
             const feedKey = `user-${xhr.storage.user_id}`;
+            if (!xhr.storage.max_id) rememberTopCursor(feedKey, entries);
             const bottomCursor = findCursor(entries, "bottom");
             if (tweets.length === 0) {
                 if (xhr.storage.requested_id && bottomCursor) {
@@ -3675,7 +3747,7 @@ const proxyRoutes = [
                 return tweets;
             }
             sortNewestFirst(tweets);
-            rememberTimelinePage(feedKey, tweets, bottomCursor, findCursor(entries, "top"));
+            rememberTimelinePage(feedKey, tweets, bottomCursor);
 
             let pinEntry = instructions.find((e) => e.type === "TimelinePinEntry");
             if (
@@ -4710,7 +4782,12 @@ const proxyRoutes = [
             if (data.errors && data.errors[0]) {
                 return {};
             }
-            let tweet = parseTweet(data.data.create_tweet.tweet_results.result);
+            // responseText can be read more than once: convert, and show in Home, once
+            let tweet = xhr.storage.tweet;
+            if (!tweet) {
+                tweet = xhr.storage.tweet = parseTweet(data.data.create_tweet.tweet_results.result);
+                showOwnTweetInHome(tweet);
+            }
             return tweet;
         },
     },
