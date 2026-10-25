@@ -397,6 +397,72 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 
 ---
 
+## Phase 10: x.com の仕様変更への追従(2026-10-25 の監査、優先度 A の 3 件)(実装済み)
+
+**状態: 実装済み(未コミット)。実機確認 2026-10-25(Edge、`OTDalwaysUseLocalFiles` で起動)。** 変更は `src/interception.js`、`tools/graphql-builtin.mjs`(新規)。テストは `tests/graphql-registry.test.cjs`(3 件追加、2 件更新)、`tests/failure-notices.test.cjs`(3 件追加)、`tests/notifications-graphql.test.cjs`(2 件追加)、`tests/account-routes.test.cjs`(ID の更新)。`node --test tests/*.test.cjs` は 121 件通過。
+
+発端: 2026-10-25 の監査(10-23 と 10-24 の HAR、両デプロイの x.com バンドル、Edge の実セッション)で次が分かった。(1) GraphQL の退路(ルートのハードコード値)は 20 操作中 13 で ID が古く features も欠けていて、レジストリが読めない初回起動や読み取り失敗のときにほぼ全カラムが落ちる構造だった。(2) `account/verify_credentials.json` は起動の単一障害点で(`updateAccountFromVerifySuccess` が例外を投げて起動が止まる)、x.com 本体はもう呼んでおらず、同じ分類の `help/configuration.json` は既に 410 だった。(3) 通知の `users_accepted_your_follow_request` が switch に無く、`Unknown notification type` の警告とともに捨てられていた。
+
+### 10-a. GraphQL の退路を「ファイルに写した表」に置き換えた
+
+- `GRAPHQL_BUILTIN_KEYS` / `GRAPHQL_BUILTIN`(`src/interception.js`): x.com の宣言(20 操作の ID、features の鍵、値、見つかったチャンク名、`main.js` の URL)をファイルに写した表。保存済みの表が無いとき(初回起動)と、読み取りが一度も成功しないときに `builtinGraphqlTable()` が同じ形の表を作って使う。送信直前の差し替えが従来どおり効くので、ルートのハードコード値が実際に出るのは `OTDgraphqlRegistry = "off"` のときだけになった。ルートの ID も同じデプロイの値に更新し、表と一致することをテストで固定した(features の定数は触っていない)。
+- 更新手順: ログイン済みの TweetDeck の console で `copy(localStorage.OTDgraphqlOperations)`、ファイルに保存、`node tools/graphql-builtin.mjs <file>` の出力で 2 つの定数を置き換える。実機の読み取りが表と違う ID を返した操作があれば、console に `the built-in GraphQL table (日付) is behind x.com for …` が 1 回出る。
+- 初回起動(保存済みの表が無い)の GraphQL 要求は読み取りを最大 10 秒待つ(`GRAPHQL_STARTUP_WAIT.firstRun`)。保存済みなら従来の 4 秒。
+- 読み取りの失敗を画面に出す。表が無い状態で HTML やバンドルが読めなかったとき、新しいデプロイで 20 操作の半分未満しか宣言が見つからなかったとき(正規表現やチャンク名のずれ)は、legacy が立ち上がってからトースト 1 回(`noteRegistryProblem` → `toastWhenReady`)。既知の操作への 400 / 404 は `query-id` という失敗種別になり、トーストが「X rejected the query for Home (404; …)」と理由(表の出所、読み取り失敗の内容)を添える。`failureFromStatus` は 4xx 全般を x-error に数えるようにした(410 が理由無しで落ちていた)。
+- 読み取りのログに、そのデプロイが宣言していた操作数を足した(`20 of 20 known, 20 declared by this deploy`)。見つからなかった操作は前回の表の値を引き継ぐので、`known` だけでは読めていないことが分からなかった。
+
+### 10-b. verify_credentials の代替
+
+- 起動時に取る x.com の HTML(レジストリと `challenge.js` が共有している)の `window.__INITIAL_STATE__.entities.users.entities[session.user_id]` が、legacy が読む v1.1 の user そのものだった(id_str、screen_name、name、profile_image_url_https、protected、verified。`require_some_consent` は無いが未定義で問題ない)。`readPageLoginUser()` が起動時に読んでおき、verify_credentials が 404 / 410 / 5xx のときに `inspectResponse` で 200 とその user に差し替える(`standInLoginUser()`)。ページから取れなければ前回 X が返した `localStorage.OTDverifiedUser`。どちらも twid cookie のユーザー ID と一致するときだけ使う。401 / 403(セッション切れ)と 429 は従来どおりログイン画面に理由を出す。act-as(Teams)アカウントの確認には代替しない。
+- 差し替えたときは 1 日 1 回トーストで知らせる(`OTDverifyStandInNoticedAt`)。
+- legacy 側の GraphQL ログイン経路(`tweetdeck_graphql_login`)は退役済みの `api.x.com/graphql` を叩くので代替にならない。
+
+### 10-c. 通知 `users_accepted_your_follow_request`
+
+- legacy にはこの action が無い(`TwitterAction._getActionConstructor` が null を返し `processRESTAction` が捨てる)。通知ルートが初めて必要としたときに、`TwitterActionFollow` を継承した `TD.services.TwitterActionFollowRequestAccepted`(action 名 `follow_request_accepted`、文言 "{{user}} accepted your follow request"、`isAboutYou` は常に true、`isOwnChirp` は false)を登録し、`_getActionConstructor` を差し替える(`ensureFollowRequestAction`)。カードは follow と同じ `status/follow_activity_in_stream`。通知の ID は `follow_request_accepted_<user>_<user>` で、フォローのまとめ通知と同じ新着判定(6-d)を通る。
+- 未知の種別は種別ごとに 1 回だけ console に出す(`noteUnknownNotification`)。7 秒ごとの警告の連打をやめた。
+
+### Phase 10 のテストと実機確認
+
+- 自動テスト: 表の無い起動が写した表で要求を組み、読み取り失敗を 1 回トーストすること。新しいデプロイで宣言が 4 / 20 しか見つからないときに報告し、見つからなかった操作は保存済みの値を引き継ぐこと(同じ `main.js` の 2 回目は何も言わない)。写した表が 20 操作すべてを持ち、鍵の値がそろい、ルートの ID と一致すること。既知の操作の 404 が「query id の問題」としてトーストに出ること。verify_credentials の 410 にページの user が立ち、`OTDverifiedUser` に保存され、1 日 1 回だけ知らせること。cookie と違うユーザーや act-as アカウントには立たないこと。`users_accepted_your_follow_request` が `follow_request_accepted` の action になり、legacy の `_getActionConstructor` が新しい名前に答え古い名前は元のままであること。legacy の follow action が無いときはその項目だけ落として残りを届けること。
+- 実機(2026-10-25、Edge): 再読込後の console に `GraphQL operations read at startup: 20 of 20 known`、`Unknown notification type` は消え、通知カラムに "accepted your follow request" のカードが 2 枚出た。Home と通知は 200。`standInLoginUser()` はページの user を返し、twid cookie の ID と一致した。
+
+### 10-e. DM 送信: jQuery の配列エンコードを v1.1 のカンマ区切りに直す
+
+- legacy は `handleSendDm` → `makeTwitterCall` → `TD.net.ajax` で `recipient_ids` を配列のまま渡し、jQuery の `$.param` が `recipient_ids[]=<id>` にする。X の v1.1 はこれを 2026-10 時点で拒否する(10-d)。`flattenArrayParams`(`src/interception.js`、Proxy の `send` で `beforeSendBody` の直後)が、`/1.1/` へのフォーム本文に `key[]=` があればカンマ区切りの `key=a,b` に書き換える。JSON 本文(先頭が `{` / `[`)、`/1.1/` 以外(GraphQL)、該当する鍵の無い本文は触らない。`dm/conversation/{id}/add_participants.json` の `participant_ids` も同じ形なので同時に直るはずだが未確認。
+- テスト: `tests/form-arrays.test.cjs` に 3 件(1 人宛て、複数 ID の結合順、触らない本文)。`node --test tests/*.test.cjs` は 124 件通過。
+- 実機: ユーザーが console から他アカウント宛てに `recipient_ids` を文字列で送って 200 を確認。OTD の書き換え経由の送信は、ローカル反映後にユーザーが配列形式の要求で確認する。
+- 制約: X の DM は E2E 暗号化のある X Chat(`x.com/i/chat`)に移行していて、legacy の `dm/new.json` で送ったメッセージは相手側の X Chat に「暗号化されていないメッセージ」として表示される(2026-10-25 にユーザーが確認)。暗号化された会話の読み書きは legacy の API では扱えない(upstream #506 の「修正不可能」はこの部分)。OTD からの DM は暗号化なしの旧 DM として送受信される、と README などで明示する必要がある。
+- 明示(ユーザーの選択は「送信機能は残して明記する」): README と README_JA の FAQ に項目を足し、作成画面の DM モードでは宛先の下に 1 行("Sent as a classic direct message without end-to-end encryption. Encrypted X Chat conversations are not available in TweetDeck.")を出す。`noteUnencryptedDm`(`src/interception.js`)が legacy の state 読み込み時に `TD.mustaches["compose/docked_compose.mustache"]` の宛先コンテナ末尾へ差し込み、既に描画済みの作成画面にも同じ行を足す。テストは `tests/dm-notice.test.cjs` に 2 件。README_KO は触っていない。
+
+### 10-f. C 群: x.com 本体が呼ばなくなった v1.1 の退役に備える(2026-10-25)
+
+- 対象と代替(`src/interception.js` の "v1.1 endpoints x.com itself no longer calls" の節)。`lists/ownerships.json` と `lists/subscriptions.json` は `CombinedLists`(x.com のプロフィールの Lists タブが使う操作。所有とフォロー中のリストが一緒に返るので、所有者の ID で分ける)から。`blocks/ids.json` と `mutes/users/ids.json` は `BlockedAccountsAll` / `MutedAccounts`(x.com の設定ページが使う操作)から、legacy の cursor ループに合わせて 1 呼び出し 1 ページ(100 人)で `ids` と `next_cursor_str` を返す。`users/contributees.json`、`users/contributees/pending.json`、`saved_searches/list.json` は代替が無いので空配列(contributees は legacy の起動が待つ要求なので、失敗をそのまま返すと起動が止まる)。
+- 切り替えの方針: REST が答えるうちは REST(1 回で 1000 リスト、5000 ID を返す。GraphQL は 1 ページ 100 人分のプロフィール付き)。404 / 410 を `localStorage.OTDretiredRest` に 1 日覚えて、その間は代替で答える(`restOrGraphqlRoute` / `emptyWhenRetiredRoute`)。翌日 REST をもう一度試す。`localStorage.OTDpreferGraphql = "1"` で代替を先に使う(テスト用)。空配列の 3 本は 5xx のその場でも空配列で答える(覚えない)。
+- 3 操作をレジストリ(`GRAPHQL_OPERATIONS`、計 23)と写した表に足した。保存済みの表に無い操作は、全文の読み直しをせずに写した表の値で埋める(以前は 24 時間後の再読込まで無かった)。`graphqlGet` が Proxy 経由で署名と ID / features の差し替えを受けつつ GET する共通経路。
+- テスト: `tests/retired-rest.test.cjs` に 6 件(REST 生存時は素通し、CombinedLists の 2 ページ分割と所有 / フォローの振り分けと legacy の形、ブロック / ミュートの 1 ページずつと空ページでの終端、410 の記憶と翌日の再試行、contributees / saved_searches の空配列と 5xx、GraphQL 側の失敗は 503)。`tests/graphql-registry.test.cjs` に 1 件(表の穴埋め)。`node --test tests/*.test.cjs` は 133 件通過。
+- 実機(2026-10-25、Edge、`OTDpreferGraphql = "1"` で起動): `CombinedLists` 2 回、`MutedAccounts` 2 ページ、`BlockedAccountsAll` 1 回がすべて 200、REST の 4 本は呼ばれない。ミュートは REST と同じ 23 件。ブロックは REST の 18 件に対して GraphQL は 0 件だったが、18 件すべてが `UsersByRestIds` で `UserUnavailable`(凍結・削除済み)で、x.com 本体のブロック設定ページも空だった。つまり GraphQL は生きているアカウントだけを返し、投稿できない相手なのでフィルタに影響は無い。このアカウントにはリストが無く、リストの中身の一致は未確認(テストのみ)。確認後にフラグは外し、REST 優先に戻した。
+- 残り: `friendships/show.json`(BTD の相互フォロー判定。OTD が持つ GraphQL のユーザー状態から emulate できる)、`friendships/no_retweets/ids.json`(GraphQL に相当が無い。失敗しても空リストで害は小さい)、`/2/timeline/conversation/{id}.json`(詳細ビュー。`TweetDetail` からの組み立てが必要で、別フェーズの規模)。
+
+### 10-g. D 群: 細かな差分(2026-10-25)
+
+- `help/configuration.json`(410)を emulate する。legacy は失敗時に 2016 年の既定値へ落ちていたので壊れてはいなかったが、起動時のエラーと、DM の文字数上限などが既定値のままだった。X が最後に公開していた値(`HELP_CONFIGURATION`: dm_text_character_limit 10000、characters_reserved_per_media 24、photo_size_limit 5 MB、短縮 URL 23)を返す。`photo_size_limit` は legacy が参照していない(アップロード上限の判定には使われない)。
+- Better TweetDeck の返信制限: `POST api.x.com/graphql/<2023 年の ID>/ConversationControlChange` を、`x.com/i/api/graphql/<現行 ID>/ConversationControlChange` に向け直すルート。URL が x.com の形になればレジストリが ID と本文の `queryId` を現行に保つ。`ConversationControlChange` をレジストリ(計 24)と写した表に足した。BTD 側のヘッダは残し、無ければ Bearer / csrf を補う。実機は未確認(BTD で返信制限付きの投稿が必要)。
+- 通知のポーリングを cursor-top に変えた(`notificationsPollCursor`)。新着の問い合わせは直前のページの top cursor を付けて送り(x.com 本体と同じ)、10 分ごと(`TOP_RESYNC_INTERVAL`)に先頭ページ全体を読み直す。Phase 2-a の「cursor-top で未読が返らない疑い」は all.json の話で、GraphQL は x.com 本体がこの方式で動いている。`localStorage.OTDnotificationsTopCursor = "0"` で従来の全ページ取得に戻る。all.json ソースは従来どおり。通知と Mentions の共有ページ(6-a)はそのまま効く(両カラムとも同じ cursor-top 応答を受け取る)。
+- カード: X の記事(`article.article_results.result`)に `summary_large_image` カード(題名・冒頭・カバー画像、`https://x.com/i/article/<id>` へのリンク)を付ける(`presentArticle`。本文・RT 先・RT 内の引用)。スペースのカード(`3691233323:audiospace`)は `https://x.com/i/spaces/<id>` への `summary` カードにする。共通の `summaryCard` を足した。どちらも実機のタイムラインに該当する投稿が無く、表示は未確認。
+- Home の取得回数は Phase 6 の設計どおり(4 秒の下限、cursor-top で 1 回約 0.8 KB)で、重複は無かった。変更なし。
+- テスト: `tests/spec-followups.test.cjs` に 5 件(help/configuration の emulate、BTD のルートと署名、記事カードと RT、スペースのカード、通知の cursor-top と 10 分の再同期とスイッチ)。`tests/notifications-graphql.test.cjs`、`tests/notifications-route.test.cjs`、`tests/mentions-route.test.cjs` の since poll の期待値を cursor-top に更新。`node --test tests/*.test.cjs` は 138 件通過。
+- 実機(2026-10-25、Edge): 再読込後、`help/configuration.json` の要求は出ず 410 も消えた。通知は初回 11.3 KB(全ページ)、以後 7 秒ごとに 698 バイト(cursor-top)。`topFetches` を 11 分前に書き換えると次の 1 回だけ全ページ(11.3 KB)になり、その後 cursor-top に戻った。ブロック 18 / ミュート 23、カラム 3 本は従来どおり。
+
+### 10-d. 残課題
+
+- 10-b の代替経路が X の実際の拒否で動くことは未確認(X はまだ 200 を返す)。応答を差し替えて試すか、死んだときに確認する。
+- 初回起動の 10 秒待ちは実機未確認。`localStorage.OTDgraphqlOperations` を消して起動すれば試せる。
+- 監査の B 群は 2026-10-25 に Edge の実セッションで、legacy 自身の経路(`TD.net.ajax.upload`、`TwitterClient.createList / updateList / destroyList`、`makeTwitterCall`)を呼んで確認した。画像アップロードは `upload.x.com/1.1/media/upload.json` の INIT 202 / APPEND 204 / FINALIZE 201 で media_id が返る(SRU の分割アップロード経路)。リストは create / update / destroy とも 200(非公開のテスト用リストを作って消した)。Trends カラムは `trends/available.json` と `trends/plus.json` で 200、`trends/place.json` は legacy のバンドルが呼んでいない。DM 送信 `dm/new.json` は legacy の送り方のまま(`recipient_ids[]=<id>`、jQuery の配列エンコード)では 400(code 214 "Bad request")。同じ要求で `recipient_ids=<id>` と文字列にすると 200(entries と users が返る)。x.com 本体が使う `dm/new2.json` + JSON ボディは `recipient_ids` を配列にすると 400("recipient_ids: '' is not a valid String")で、こちらも文字列を要求する。対応は 10-e。
+- C 群(退役に備える REST)、D 群(`help/configuration` の emulate、BTD の `api.x.com/graphql/` パス、通知ポーリングの cursor-top 化、`article` / `audiospace` のカード)は未着手。実機で Home の GraphQL が同じ cursor で数秒おきに 2〜3 回ずつ出ていた(通知 1 回に Home 2 回の比率)。取得間隔の見直し候補。
+
+---
+
 ## 対応しない / できないもの
 
 - **X 側の仕様・運用**: #551(Teams からの投稿で凍結)、#529(X Pro が Premium+ 限定)、#522(検索演算子の制限。upstream 作者も X 側と判断)、#506(DM は新 Chat に移行。upstream 作者が「修正不可能」と明言)、#492(アカウント制限。同系統の #469 は close 済み)、#462 / #510 / #259(Teams 招待。X の delegate 挙動)、#517 / #495(レート制限。Phase 1 で無駄なリクエストを減らして緩和はできる。Phase 6 で通知カラムも残り回数に合わせて減速するようにした)
@@ -412,6 +478,6 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 ## 進め方
 
 - Phase ごとに PR を分け、`tests/` に `node:test` のケースを足す。実行は `node --test tests/*.test.cjs`。
-- Phase 1 から Phase 5 までの実機確認は 2026-10-17 に問題なし。Phase 6 は 2026-10-18 に取得間隔だけ確認し、目視とブックマーク、フォローのまとめ通知(6-d)の確認が残っている。Phase 7 は 2026-10-18 に確認済み。Phase 8 は 2026-10-19 に確認済み。Phase 9 は 2026-10-24 に確認済み。
-- 残りは upstream への PR、Phase 5 で未対応の #321、Phase 7 の残課題(長文の Re-draft、返信制限の確認)、Phase 8 の残課題(「users I follow」のクライアント側への置き換え)、Phase 9 の残課題(廃止 ID への応答の形、`off` の実機確認)。Phase 6 の残課題だった Home のクエリ ID は Phase 9 で自動追従になった。
+- Phase 1 から Phase 5 までの実機確認は 2026-10-17 に問題なし。Phase 6 は 2026-10-18 に取得間隔だけ確認し、目視とブックマーク、フォローのまとめ通知(6-d)の確認が残っている。Phase 7 は 2026-10-18 に確認済み。Phase 8 は 2026-10-19 に確認済み。Phase 9 は 2026-10-24 に確認済み。Phase 10 は 2026-10-25 に確認済み(verify_credentials の代替経路は X が拒否するまで実機では発火しない)。
+- 残りは upstream への PR、Phase 5 で未対応の #321、Phase 7 の残課題(長文の Re-draft、返信制限の確認)、Phase 8 の残課題(「users I follow」のクライアント側への置き換え)、Phase 9 の残課題(廃止 ID への応答の形、`off` の実機確認)、Phase 10 の残課題(代替経路の実発火、初回起動の待ち、BTD の返信制限と記事・スペースのカードの実機確認、`friendships/show` の emulate、詳細ビューの TweetDetail 移行)。Phase 6 の残課題だった Home のクエリ ID は Phase 9 で自動追従になり、Phase 9 の退路は Phase 10 でファイルに写した表になった。
 - upstream へは #554(RTL)、#552(Mentions)、Phase 1(92f0be5 / bfcbdd3)の順で PR を出す。起動ハングの修正は limex 氏の #562 が未マージで close されているので、出すならクレジット付きで出し直す。

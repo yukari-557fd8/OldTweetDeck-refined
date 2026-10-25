@@ -49,7 +49,7 @@ test('list members become the legacy users array', () => {
     const xhr = { modUrl: 'https://api.x.com/1.1/lists/members.json?list_id=5&cursor=-1&count=5000', storage: {} };
     route.beforeRequest(xhr);
     const variables = JSON.parse(new URL(xhr.modUrl).searchParams.get('variables'));
-    assert.ok(xhr.modUrl.includes('/yQ_0-CTekcCY2oFRTskpSw/ListMembers'), xhr.modUrl);
+    assert.ok(xhr.modUrl.includes('/fFCNliJG5Gq4yEnINo6-1A/ListMembers'), xhr.modUrl);
     assert.equal(variables.listId, '5');
     assert.equal(variables.count, 100);
     assert.equal(variables.cursor, undefined);

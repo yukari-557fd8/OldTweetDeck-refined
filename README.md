@@ -85,6 +85,10 @@ You're getting rate limited. They'll comeback after some time.
 
 This can not be fixed. Since Twitter made likes private, the API to retrieve likes is gone.
 
+#### Direct messages I send show up as "unencrypted" on the other side.
+
+X moved direct messages to X Chat (x.com/i/chat), which can encrypt conversations end-to-end. TweetDeck only knows the classic direct messages: a message sent from here is a classic, unencrypted one, and the other side's X Chat labels it that way. Encrypted conversations cannot be read or answered from TweetDeck. The composer says so under the recipients when you write a direct message.
+
 
 
 

@@ -5,12 +5,12 @@ const fs = require('node:fs');
 const source = fs.readFileSync('src/interception.js', 'utf8');
 
 // One OTD instance per call. The Notifications and Mentions routes read the same GraphQL page.
-function load(localStorage = {}) {
+function load(localStorage = {}, globals = {}) {
     const context = vm.createContext({
         localStorage, location: { hostname: 'x.com' }, navigator: { language: 'en-US' },
         document: { body: { getAttribute: () => null } },
         XMLHttpRequest: function () {}, console: { ...console, log() {}, warn() {}, error() {} }, URL, URLSearchParams,
-        Date, setTimeout, Event: class {}, ProgressEvent: class {},
+        Date, setTimeout, Event: class {}, ProgressEvent: class {}, ...globals,
     });
     vm.runInContext(source, context);
     const routes = vm.runInContext('proxyRoutes', context);
@@ -84,8 +84,8 @@ test('both columns ask the GraphQL notifications timeline, with cursors inside v
     }
     deliver(notifications, fixture());
     deliver(mentions, fixture());
-    // since polls re-read the top page; scrolling down takes the bottom cursor of the first page
-    assert.equal(params(prepare(notifications, 'count=20&since_id=5')).variables.cursor, undefined);
+    // a poll takes the top cursor of the page just read; scrolling down the bottom cursor of the first page
+    assert.equal(params(prepare(notifications, 'count=20&since_id=5')).variables.cursor, 'TOP');
     assert.equal(params(prepare(notifications, 'count=20&max_id=5')).variables.cursor, 'BOTTOM');
     assert.equal(params(prepare(mentions, 'count=20&max_id=5')).variables.cursor, 'BOTTOM');
     assert.equal(params(prepare(mentions, 'count=20&max_id=5', '43')).variables.cursor, undefined);
@@ -162,4 +162,50 @@ test('OTDnotificationsSource = all.json goes back to the old endpoint, whose pag
     assert.deepEqual(deliver(mentions, allJson).map(t => t.id_str), ['101']);
     assert.ok(prepare(mentions, 'count=20&max_id=5').modUrl.endsWith('&cursor=OLD'));
     notifications.inspectResponse({ status: 200, storage: {}, responseText: allJson });
+});
+
+// Legacy's follow action, as far as the action derived from it for an accepted follow request needs.
+function legacyActions() {
+    const TwitterActionFollow = function (account) { this.account = account; };
+    TwitterActionFollow.prototype = { action: 'follow', isAboutYou() { return false; }, isOwnChirp() { return false; }, generateText() { this.text = 'followed'; } };
+    const TwitterAction = function () {};
+    TwitterAction._getActionConstructor = (name) => (name === 'follow' ? TwitterActionFollow : null);
+    return {
+        services: { TwitterAction, TwitterActionFollow },
+        ui: { template: { toHtml: (t, d) => t.replace('{{{user}}}', d.user), render: (name, d) => `<a href="${d.profileUrl}">${d.name}</a>` } },
+    };
+}
+
+test('an accepted follow request becomes an action legacy learns to render like a follow', () => {
+    const TD = legacyActions();
+    const { notifications } = load({}, { TD });
+    const accepted = (id, sortIndex, users) => aggregate('users_accepted_your_follow_request', id, sortIndex, users, []);
+    const actions = deliver(notifications, page([accepted('n7', 650, [gUser('11'), gUser('12')]), aggregate('users_followed_you', 'n8', 640, [gUser('13')], [])]));
+    assert.deepEqual(actions.map(summary), ['follow_request_accepted:11:11@650', 'follow_request_accepted:12:12@649', 'follow:13:13@640']);
+    assert.equal(actions[0].sources[0].screen_name, 'user11');
+    // legacy now answers the new name with the derived constructor, and the old ones as before
+    const Accepted = TD.services.TwitterAction._getActionConstructor('follow_request_accepted');
+    assert.equal(typeof Accepted, 'function');
+    assert.equal(TD.services.TwitterAction._getActionConstructor('follow'), TD.services.TwitterActionFollow);
+    assert.equal(TD.services.TwitterAction._getActionConstructor('favorite'), null);
+    const action = new Accepted({ getUserID: () => '42' });
+    action.following = { name: 'User 11', screen_name: 'user11', emojifiedName: 'User 11' };
+    action.generateText();
+    assert.equal(action.action, 'follow_request_accepted');
+    assert.equal(action.text, 'User 11 accepted your follow request');
+    assert.equal(action.htmlText, '<a href="https://x.com/user11">User 11</a> accepted your follow request');
+    assert.equal(action.isAboutYou(), true);
+    assert.equal(action.isOwnChirp(), false);
+    // delivered once, like any other notification
+    assert.deepEqual(deliver(notifications, page([accepted('n7', 650, [gUser('11'), gUser('12')])])), []);
+});
+
+test('without legacy\'s follow action the accepted request is left out, and the rest of the page is kept', () => {
+    const { notifications } = load();
+    const actions = deliver(notifications, page([
+        aggregate('users_accepted_your_follow_request', 'n7', 650, [gUser('11')], []),
+        aggregate('users_followed_you', 'n8', 640, [gUser('13')], []),
+        aggregate('some_future_type', 'n9', 630, [gUser('14')], []),
+    ]));
+    assert.deepEqual(actions.map(summary), ['follow:13:13@640']);
 });

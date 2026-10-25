@@ -164,3 +164,74 @@ test('a spinner still up after 30 s gets the reason under it, until the login fo
     timers.shift().fn();
     assert.equal(timers.length, 0);
 });
+
+const HOME = 'https://api.x.com/1.1/statuses/home_timeline.json?count=40';
+
+test('a 404 on a GraphQL operation is explained as a query id problem', async () => {
+    const toasts = [];
+    const context = load({ TD: { ready: true }, toasts: { showErrorNotification: (n) => toasts.push(n.message) } });
+    const { xhr, seen } = await request(context, HOME);
+    xhr.respond(404, '{"errors":[{"message":"operation not found"}]}');
+    assert.equal(seen.ok, false);
+    assert.deepEqual(toasts.map((t) => t.replace(/\d{4}-\d{2}-\d{2}/, 'DATE')), [
+        "X rejected the query for Home (404; the id came from OldTweetDeck's built-in copy of DATE). Reload TweetDeck; if this keeps happening, OldTweetDeck needs an update.",
+    ]);
+    assert.equal(vm.runInContext('failureFromStatus', context)({ status: 410, storage: {} }).kind, 'x-error');
+});
+
+const PAGE_USER = { id_str: '42', screen_name: 'me', name: 'Me', profile_image_url_https: 'https://pbs.twimg.com/me.jpg', protected: false, verified: false };
+
+test("when X refuses account verification, the login account from x.com's page stands in", async () => {
+    const toasts = [];
+    const context = load({
+        TD: { ready: true }, toasts: { showErrorNotification: (n) => toasts.push(n.message) },
+        document: { cookie: 'night_mode=2; twid=u%3D42; lang=en' },
+    });
+    vm.runInContext(`pageLoginUser = ${JSON.stringify(PAGE_USER)}`, context);
+    const { xhr, seen } = await request(context, VERIFY);
+    xhr.respond(410, '{"errors":[{"message":"Gone","code":34}]}');
+    assert.equal(seen.status, 200);
+    assert.equal(seen.ok, true);
+    assert.equal(JSON.parse(seen.text).screen_name, 'me');
+    assert.equal(JSON.parse(context.localStorage.OTDverifiedUser).id_str, '42');
+    assert.equal(vm.runInContext('verifiedUser.id_str', context), '42');
+    assert.deepEqual(toasts, [
+        "X no longer confirms your account to TweetDeck (410); OldTweetDeck used the profile on x.com's page instead. "
+        + 'If the profile shown is wrong, open x.com in another tab, then reload TweetDeck.',
+    ]);
+    // within a day the stand-in is silent; the profile X confirmed last time serves when the page's is missing
+    const later = load({
+        localStorage: context.localStorage, TD: { ready: true }, toasts: { showErrorNotification: (n) => toasts.push(n.message) },
+        document: { cookie: 'twid=u%3D42' },
+    });
+    const second = await request(later, VERIFY);
+    second.xhr.respond(410, '');
+    assert.equal(second.seen.status, 200);
+    assert.equal(JSON.parse(second.seen.text).screen_name, 'me');
+    assert.equal(toasts.length, 1);
+});
+
+test('the stand-in serves only the account the session cookie names, and never an acting account', async () => {
+    const shown = [];
+    const TD = { ready: false, controller: { init: { showLogin(message) { shown.push(message); } } } };
+    const context = load({ TD, document: { cookie: 'twid=u%3D42' } });
+    vm.runInContext(`pageLoginUser = ${JSON.stringify({ ...PAGE_USER, id_str: '7', screen_name: 'other' })}`, context);
+    vm.runInContext('verifiedUser = { id_str: "8", screen_name: "stale" }', context);
+    const { xhr, seen } = await request(context, VERIFY);
+    xhr.respond(410, '{"errors":[{"message":"Gone"}]}');
+    assert.equal(seen.status, 410);
+    TD.controller.init.showLogin('Error initializing TweetDeck');
+    assert.equal(shown[0], 'TweetDeck could not start. X returned an error for account verification (410).');
+    // an acting (Teams) account: only X can confirm it
+    const acting = load({ document: { cookie: 'twid=u%3D42' } });
+    vm.runInContext(`pageLoginUser = ${JSON.stringify(PAGE_USER)}`, acting);
+    const XHR = vm.runInContext('XMLHttpRequest', acting);
+    const req = new XHR();
+    req.open('GET', VERIFY, true);
+    req.setRequestHeader('x-act-as-user-id', '99');
+    const read = {};
+    req.onload = () => Object.assign(read, jqueryRead(req));
+    await req.send(null);
+    req.respond(410, '{}');
+    assert.equal(read.status, 410);
+});

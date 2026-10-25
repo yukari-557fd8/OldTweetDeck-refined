@@ -48,9 +48,9 @@ test('mentions are read from the GraphQL notifications timeline, with their own 
 
     route.afterRequest({ storage: { user_id: '42' }, responseText: allJsonPage([]) });
 
-    // since polls re-read the top page. cursor-top is suspected of hiding unread items.
+    // a poll takes the top cursor of the page just read (the whole page is read again every ten minutes)
     const newer = prepare(legacyRequest('count=40&since_id=5'));
-    assert.equal(variables(newer).cursor, undefined, newer.modUrl);
+    assert.equal(variables(newer).cursor, 'TOP', newer.modUrl);
     const older = prepare(legacyRequest('count=40&max_id=5'));
     assert.equal(variables(older).cursor, 'BOTTOM', older.modUrl);
     // another account's request must not borrow 42's cursors

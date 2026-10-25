@@ -277,6 +277,42 @@ function parseNoteTweet(result) {
     return { text, entities };
 }
 
+// A legacy summary card from a link, a title, a text and an image (summary_large_image with the
+// image, summary without): what TweetDeck's card renderer reads for a link preview.
+function summaryCard({ url, title, description, vanity, image }) {
+    const stringValue = (value) => ({ type: "STRING", string_value: value });
+    const binding_values = {
+        card_url: stringValue(url),
+        title: stringValue(title),
+        description: stringValue(description || ""),
+        domain: stringValue(vanity),
+        vanity_url: stringValue(vanity),
+    };
+    if (image?.url) {
+        for (const prefix of ["photo_image_full_size", "summary_photo_image", "thumbnail_image"]) {
+            for (const suffix of ["", "_small", "_large", "_x_large", "_original"]) {
+                binding_values[prefix + suffix] = { type: "IMAGE", image_value: { url: image.url, width: image.width || 0, height: image.height || 0 } };
+            }
+        }
+    }
+    return { name: image?.url ? "summary_large_image" : "summary", url, binding_values };
+}
+
+// An X Article comes as `article` on the tweet, not as a card, so TweetDeck showed the text alone.
+// Shape (HomeLatestTimeline, 2026-10-23): article.article_results.result { rest_id, title,
+// preview_text, cover_media.media_info { original_img_url, original_img_width, original_img_height } }.
+function presentArticle(tweet, article) {
+    if (!tweet || tweet.card) return;
+    const result = article?.article_results?.result;
+    const id = result?.rest_id || result?.id;
+    if (!id || !result.title) return;
+    const media = result.cover_media?.media_info;
+    const image = media?.original_img_url
+        ? { url: media.original_img_url, width: media.original_img_width, height: media.original_img_height }
+        : null;
+    tweet.card = summaryCard({ url: `https://x.com/i/article/${id}`, title: result.title, description: result.preview_text, vanity: "x.com", image });
+}
+
 function parseTweetCard(card) {
     const legacy = card?.legacy;
     if (!legacy) return;
@@ -284,6 +320,13 @@ function parseTweetCard(card) {
         ? Object.fromEntries(legacy.binding_values.filter(entry => entry?.key && entry.value).map(entry => [entry.key, entry.value]))
         : legacy.binding_values || {};
     const normalized = { ...legacy, binding_values: bindings };
+    // A Space's card (binding values: id, card_url, narrow_cast_space_type, tweet_id) has nothing
+    // TweetDeck can render; a link card to the Space says what the tweet carries.
+    if (legacy.name === "3691233323:audiospace") {
+        const spaceId = bindings.id?.string_value;
+        const url = bindings.card_url?.string_value || (spaceId ? `https://x.com/i/spaces/${spaceId}` : null);
+        return url ? summaryCard({ url, title: "X Space", description: "Listen on X", vanity: "x.com", image: null }) : normalized;
+    }
     if (legacy.name !== "unified_card") return normalized;
     try {
         const payload = JSON.parse(bindings.unified_card?.string_value);
@@ -589,6 +632,7 @@ function parseTweet(res, options) {
                     tweet.retweeted_status.ext.views = { r: { ok: { count: +result.views.count } } };
                 }
                 presentCard(tweet.retweeted_status, result.card);
+                presentArticle(tweet.retweeted_status, result.article);
             } else {
                 console.warn("No retweeted status", result);
             }
@@ -654,6 +698,7 @@ function parseTweet(res, options) {
             }
         }
         presentCard(tweet, res.card);
+        presentArticle(tweet, res.article);
         if (res.views) {
             if (!tweet.ext) tweet.ext = {};
             tweet.ext.views = { r: { ok: { count: +res.views.count } } };
@@ -704,6 +749,337 @@ function keepLegacyPollerCache() {
     }
 }
 
+// ---- direct messages are the old, unencrypted kind -------------------------------------------
+
+// X moved direct messages to X Chat (x.com/i/chat), whose conversations can be end-to-end
+// encrypted. Legacy sends through the old dm/new.json, which still works (flattenArrayParams) but
+// is not encrypted: the other side's X Chat shows the message as unencrypted, and an encrypted
+// conversation can neither be read nor answered from here. Said where the message is written:
+// under the recipients of the composer's DM mode, in the template legacy renders it from, and in
+// a composer already on the page. Called whenever legacy loads its state, like the other patches.
+const DM_NOTICE_CLASS = "otd-dm-notice";
+const DM_NOTICE_TEXT = "Sent as a classic direct message without end-to-end encryption. Encrypted X Chat conversations are not available in TweetDeck.";
+const DM_NOTICE_HTML = `<p class="${DM_NOTICE_CLASS} compose-text-title padding-t--9" style="font-size: 12px; opacity: 0.8;">${DM_NOTICE_TEXT}</p>`;
+let dmNoticeInTemplate = false;
+function noteUnencryptedDm() {
+    try {
+        const key = "compose/docked_compose.mustache";
+        const template = TD.mustaches?.[key];
+        if (!dmNoticeInTemplate && typeof template === "string") {
+            if (template.includes(DM_NOTICE_CLASS)) {
+                dmNoticeInTemplate = true;
+            } else {
+                // the marker follows the recipient container's closing tag; the line goes inside
+                const marker = template.indexOf("<!-- end Direct Message -->");
+                const close = marker === -1 ? -1 : template.lastIndexOf("</div>", marker);
+                if (close !== -1) {
+                    TD.mustaches[key] = template.slice(0, close) + DM_NOTICE_HTML + " " + template.slice(close);
+                    dmNoticeInTemplate = true;
+                }
+            }
+        }
+        if (typeof document !== "undefined") {
+            const container = document.querySelector(".js-compose-message-recipient-container");
+            if (container && !container.querySelector(`.${DM_NOTICE_CLASS}`)) container.insertAdjacentHTML("beforeend", DM_NOTICE_HTML);
+        }
+    } catch (e) {
+        // legacy is not loaded yet; the next state load tries again
+    }
+}
+
+// ---- v1.1 endpoints x.com itself no longer calls -----------------------------------------------
+
+// X retires these one at a time (help/configuration.json: 410 since 2026-10). The ones legacy
+// still needs have another source, or a harmless empty answer: lists/ownerships and
+// lists/subscriptions from CombinedLists, blocks/ids and mutes/users/ids from BlockedAccountsAll
+// and MutedAccounts (the operations behind x.com's own lists, blocked and muted pages),
+// users/contributees and saved_searches/list as an empty list. REST stays the first choice while
+// it answers: one call brings a thousand lists or five thousand ids, where a GraphQL page holds a
+// hundred users with their profiles. A 404 or 410 is remembered for a day and the other source
+// serves meanwhile; the next day REST is tried once more. localStorage.OTDpreferGraphql = "1"
+// takes the other source first, which is how it is tested while REST still works.
+const RETIRED_REST_KEY = "OTDretiredRest";
+const RETIRED_REST_RETRY = 24 * 60 * 60 * 1000;
+const RETIRED_REST_ANSWERS = {
+    "/1.1/lists/ownerships.json": "CombinedLists",
+    "/1.1/lists/subscriptions.json": "CombinedLists",
+    "/1.1/blocks/ids.json": "BlockedAccountsAll",
+    "/1.1/mutes/users/ids.json": "MutedAccounts",
+    "/1.1/users/contributees.json": "an empty list",
+    "/1.1/users/contributees/pending.json": "an empty list",
+    "/1.1/saved_searches/list.json": "an empty list",
+};
+
+function retiredRestEntry(path) {
+    const entry = (readStoredJSON(RETIRED_REST_KEY) || {})[path];
+    return entry && Date.now() - (entry.at || 0) < RETIRED_REST_RETRY ? entry : null;
+}
+
+function rememberRetiredRest(path, status) {
+    const all = readStoredJSON(RETIRED_REST_KEY) || {};
+    all[path] = { status, at: Date.now() };
+    try {
+        localStorage[RETIRED_REST_KEY] = JSON.stringify(all);
+    } catch (e) {
+        // nothing to do: the next start asks REST again
+    }
+    noteGraphqlDifference(`retired:${path}`, `${path} answered ${status}; ${RETIRED_REST_ANSWERS[path]} stands in for a day`);
+}
+
+function useGraphqlFor(path) {
+    return localStorage.OTDpreferGraphql === "1" || !!retiredRestEntry(path);
+}
+
+// From the Proxy's status getter: a REST answer of 404 or 410 on one of the paths above.
+function noteRestRetirement(xhr) {
+    const status = xhr._status || xhr.status;
+    if (status !== 404 && status !== 410) return;
+    if (xhr.storage?.graphql || xhr.storage?.emptyAnswer) return;
+    const path = requestPath(xhr);
+    if (!(path in RETIRED_REST_ANSWERS)) return;
+    rememberRetiredRest(path, status);
+}
+
+function csrfToken() {
+    try {
+        return /(?:^|;\s*)ct0=([^;]+)/.exec(document.cookie)?.[1] || "";
+    } catch (e) {
+        return "";
+    }
+}
+
+// A GET of one of the registry's operations, through the Proxy (which signs it and rewrites the
+// query id and features to x.com's current ones), as x.com's own page would send it.
+function graphqlGet(operation, variables, fieldToggles) {
+    return new Promise((resolve, reject) => {
+        const builtin = builtinGraphqlTable();
+        const table = graphqlRegistry.table || builtin;
+        const known = table.ops[operation] || builtin.ops[operation];
+        if (!known) {
+            reject(new Error(`unknown GraphQL operation ${operation}`));
+            return;
+        }
+        let req;
+        try {
+            req = new XMLHttpRequest();
+            req.open("GET", `${NEW_API}/${known.id}/${operation}?${generateParams(graphqlFeaturesFor(known, table), variables, fieldToggles)}`, true);
+        } catch (e) {
+            reject(e);
+            return;
+        }
+        req.setRequestHeader("Authorization", PUBLIC_TOKENS[0]);
+        req.setRequestHeader("X-Csrf-Token", csrfToken());
+        req.setRequestHeader("X-Twitter-Auth-Type", "OAuth2Session");
+        req.setRequestHeader("X-Twitter-Active-User", "yes");
+        req.setRequestHeader("Content-Type", "application/json");
+        req.onload = () => {
+            let data = null;
+            try {
+                data = JSON.parse(req.responseText);
+            } catch (e) {
+                // not JSON: the status says enough
+            }
+            resolve({ status: req.status, data });
+        };
+        req.onerror = () => reject(new Error(`${operation} failed`));
+        req.send();
+    });
+}
+
+// The instructions of whichever timeline a GraphQL answer carries (CombinedLists has it under
+// user.result.timeline.timeline, MutedAccounts under viewer.muting_timeline.timeline, and so on).
+function graphqlInstructions(data) {
+    const seen = new Set();
+    const walk = (node, depth) => {
+        if (!node || typeof node !== "object" || depth > 8 || seen.has(node)) return null;
+        seen.add(node);
+        if (Array.isArray(node.instructions)) return node.instructions;
+        for (const value of Object.values(node)) {
+            const found = walk(value, depth + 1);
+            if (found) return found;
+        }
+        return null;
+    };
+    return walk(data?.data, 0) || [];
+}
+
+function graphqlEntries(data) {
+    return graphqlInstructions(data).find((i) => i?.type === "TimelineAddEntries")?.entries || [];
+}
+
+// The item contents of the entries, modules' items included.
+function graphqlItemContents(entries) {
+    const out = [];
+    for (const entry of entries) {
+        const content = entry?.content;
+        if (!content) continue;
+        if (content.itemContent) out.push(content.itemContent);
+        for (const item of content.items || []) if (item?.item?.itemContent) out.push(item.item.itemContent);
+    }
+    return out;
+}
+
+function graphqlBottomCursor(entries) {
+    for (const entry of entries) {
+        const content = entry?.content;
+        if (content?.cursorType === "Bottom" && content.value) return content.value;
+        if (String(entry?.entryId || "").startsWith("cursor-bottom") && (content?.value || content?.itemContent?.value)) return content.value || content.itemContent.value;
+    }
+    return null;
+}
+
+function graphqlPageFailure(status, data) {
+    if (status >= 200 && status < 300 && (!data?.errors || graphqlInstructions(data).length)) return null;
+    return new Error(data?.errors?.[0]?.message || `HTTP ${status}`);
+}
+
+function answerWithError(xhr, message, e) {
+    console.warn(`OldTweetDeck: ${message}`, e);
+    xhr._status = 503;
+    xhr.storage.failure = { kind: "x-error", status: null, detail: String(e?.message || e) };
+    xhr._responseText = JSON.stringify({ errors: [{ message }] });
+    emulateResponse(xhr);
+}
+
+// lists/ownerships.json and lists/subscriptions.json: legacy asks each once, for a thousand lists,
+// and reads `lists`. CombinedLists pages through the lists a user owns or follows together, a
+// hundred at a time; the owner tells them apart.
+const LIST_PAGE = 100;
+const LIST_PAGES = 10;
+async function answerListsFromGraph(xhr, kind) {
+    const userId = String(requestUserId(xhr) || "");
+    const lists = [];
+    let cursor = null;
+    try {
+        for (let page = 0; page < LIST_PAGES; page++) {
+            const variables = { userId, count: LIST_PAGE };
+            if (cursor) variables.cursor = cursor;
+            const { status, data } = await graphqlGet("CombinedLists", variables);
+            const failure = graphqlPageFailure(status, data);
+            if (failure) throw failure;
+            const entries = graphqlEntries(data);
+            let found = 0;
+            for (const item of graphqlItemContents(entries)) {
+                if (!item?.list || typeof item.list !== "object") continue;
+                found++;
+                const list = legacyListFromNode(item.list);
+                const own = String(list.user?.id_str) === userId;
+                if (kind === "owned" ? own : !own) lists.push(list);
+            }
+            cursor = graphqlBottomCursor(entries);
+            if (!found || !cursor) break;
+        }
+    } catch (e) {
+        answerWithError(xhr, `could not read ${kind} lists from CombinedLists`, e);
+        return;
+    }
+    xhr._responseText = JSON.stringify({ lists, next_cursor: 0, next_cursor_str: "0", previous_cursor: 0, previous_cursor_str: "0" });
+    emulateResponse(xhr);
+}
+
+// blocks/ids.json and mutes/users/ids.json: legacy reads `ids` and follows next_cursor_str until
+// it is "0". One GraphQL page per call; a page without users ends the walk.
+const IDS_PAGE = 100;
+async function answerIdsFromGraph(xhr, operation) {
+    let cursor = null;
+    try {
+        cursor = new URL(xhr.originalUrl || xhr.modUrl).searchParams.get("cursor");
+    } catch (e) {
+        // no cursor: the first page
+    }
+    const variables = { count: IDS_PAGE, includePromotedContent: false };
+    if (cursor && cursor !== "-1" && cursor !== "0") variables.cursor = cursor;
+    try {
+        const { status, data } = await graphqlGet(operation, variables);
+        const failure = graphqlPageFailure(status, data);
+        if (failure) throw failure;
+        const entries = graphqlEntries(data);
+        const ids = [];
+        for (const item of graphqlItemContents(entries)) {
+            const result = item?.user_results?.result || item?.userResults?.result;
+            const id = result?.rest_id || result?.legacy?.id_str;
+            if (id) ids.push(String(id));
+        }
+        const bottom = ids.length ? graphqlBottomCursor(entries) : null;
+        xhr._responseText = JSON.stringify({ ids, next_cursor: 0, next_cursor_str: bottom || "0", previous_cursor: 0, previous_cursor_str: "0" });
+    } catch (e) {
+        answerWithError(xhr, `could not read ${operation}`, e);
+        return;
+    }
+    emulateResponse(xhr);
+}
+
+// help/configuration.json went 410 in 2026-10. Legacy falls back to its 2016 defaults when the
+// request fails, so nothing broke, but startup logged an error and the composer counted a DM at
+// the default limit. These are X's last published values (the photo limit is not enforced by
+// legacy; the composer reads characters_reserved_per_media, transformedURLLength and
+// dm_text_character_limit).
+const HELP_CONFIGURATION = {
+    characters_reserved_per_media: 24,
+    dm_text_character_limit: 10000,
+    max_media_per_upload: 4,
+    non_username_paths: [],
+    photo_size_limit: 5242880,
+    photo_sizes: {
+        thumb: { h: 150, resize: "crop", w: 150 },
+        small: { h: 680, resize: "fit", w: 680 },
+        medium: { h: 1200, resize: "fit", w: 1200 },
+        large: { h: 2048, resize: "fit", w: 2048 },
+    },
+    short_url_length: 23,
+    short_url_length_https: 23,
+    transformedURLLength: 23,
+};
+
+// A route that lets REST through while it answers, and takes the GraphQL source otherwise.
+function restOrGraphqlRoute(path, answer) {
+    return {
+        path,
+        method: "GET",
+        openHandler: deferOpen,
+        beforeSend: (xhr) => {
+            xhr.storage.graphql = useGraphqlFor(path);
+            if (!xhr.storage.graphql) openDeferred(xhr);
+        },
+        sendHandler: (xhr, body) => {
+            if (xhr.storage.graphql) answer(xhr);
+            else xhr.send(body);
+        },
+    };
+}
+
+// A route whose endpoint has nothing to stand in: an empty list once it is gone, and the same
+// answer when it fails on the spot (legacy's startup waits for users/contributees).
+function emptyWhenRetiredRoute(path) {
+    return {
+        path,
+        method: "GET",
+        openHandler: deferOpen,
+        beforeSend: (xhr) => {
+            xhr.storage.emptyAnswer = !!retiredRestEntry(path);
+            if (!xhr.storage.emptyAnswer) openDeferred(xhr);
+        },
+        sendHandler: (xhr, body) => {
+            if (!xhr.storage.emptyAnswer) {
+                xhr.send(body);
+                return;
+            }
+            xhr._responseText = "[]";
+            emulateResponse(xhr);
+        },
+        inspectResponse: (xhr) => {
+            const status = xhr.status;
+            if (status !== 404 && status !== 410 && status < 500) return;
+            console.warn(`OldTweetDeck: ${path} answered ${status}; answering with an empty list instead`);
+            if (status === 404 || status === 410) rememberRetiredRest(path, status);
+            xhr.storage.emptyAnswer = true;
+            xhr._status = 200;
+            xhr._statusText = "OK";
+            xhr._responseText = "[]";
+        },
+    };
+}
+
 // ---- request plumbing shared by the timeline routes -------------------------------------------
 
 function getRequestHeader(xhr, name) {
@@ -733,6 +1109,38 @@ function requestUserId(xhr) {
     } catch (e) {
         return verifiedUser?.id_str ?? localStorage.twitterAccountID;
     }
+}
+
+// jQuery encodes an array parameter as key[]=a&key[]=b, and that is how legacy sends the
+// recipients of a direct message (handleSendDm -> makeTwitterCall -> TD.net.ajax). X's v1.1
+// endpoints reject that form now: dm/new.json answered 400 "Bad request" on 2026-10-25 and 200 with
+// the same recipient as a plain string. The v1.1 API has always taken comma-joined lists, which
+// legacy's other calls build by hand (users/lookup, statuses/lookup). Rewrite the form body on the
+// way out; JSON bodies and bodies without such a key are left alone.
+function flattenArrayParams(xhr, body) {
+    if (typeof body !== "string" || !/(?:%5B%5D|\[\])=/.test(body)) return body;
+    if (body[0] === "{" || body[0] === "[") return body; // JSON, which URLSearchParams would misread
+    if (!/\/1\.1\//.test(String(xhr.modUrl || ""))) return body;
+    let params;
+    try {
+        params = new URLSearchParams(body);
+    } catch (e) {
+        return body;
+    }
+    const out = new URLSearchParams();
+    const lists = new Map();
+    for (const [key, value] of params) {
+        const m = /^(.+)\[\]$/.exec(key);
+        if (!m) {
+            out.append(key, value);
+            continue;
+        }
+        if (!lists.has(m[1])) lists.set(m[1], []);
+        lists.get(m[1]).push(value);
+    }
+    if (!lists.size) return body;
+    for (const [key, values] of lists) out.append(key, values.join(","));
+    return out.toString();
 }
 
 // Routes whose URL depends on the request headers defer the real open() to beforeSend.
@@ -797,7 +1205,7 @@ const REQUEST_LABELS = {
     "/1.1/search/universal.json": "Search",
 };
 // 401 and 403 stay off the toasts: after startup they also answer protected or missing accounts.
-const TOASTED_FAILURES = new Set(["rate-limit", "x-error", "solver", "unreadable"]);
+const TOASTED_FAILURES = new Set(["rate-limit", "x-error", "query-id", "solver", "unreadable"]);
 const FAILURE_NOTICE_INTERVAL = 5 * 60 * 1000;
 const STARTUP_STALL_DELAY = 30 * 1000;
 const startupFailures = [];
@@ -844,6 +1252,8 @@ function describeFailure(f) {
             return `Could not reach X for ${f.label}. Check your connection, then reload TweetDeck.`;
         case "verification-timeout":
             return "X did not confirm your account within 20 seconds. Reload TweetDeck.";
+        case "query-id":
+            return `X rejected the query for ${f.label} (${f.status}; ${f.detail}). Reload TweetDeck; if this keeps happening, OldTweetDeck needs an update.`;
         default: {
             const detail = [f.status, f.detail].filter(Boolean).join(": ");
             return `X returned an error for ${f.label}${detail ? ` (${detail})` : ""}.`;
@@ -864,9 +1274,38 @@ function failureFromStatus(xhr) {
     }
     if (status === 401 || status === 403) return { kind: "session", status };
     if (status === 0) return { kind: "network", status };
-    // 400 and 404 on a timeline usually mean X retired the GraphQL query id it uses.
-    if (status >= 500 || status === 400 || status === 404) return { kind: "x-error", status, detail: xhr.statusText || "" };
+    // 400 and 404 on a timeline usually mean X retired the GraphQL query id it uses; 410 that X
+    // retired the endpoint itself (help/configuration.json went that way in 2026-10).
+    if (status >= 400) return { kind: "x-error", status, detail: xhr.statusText || "" };
     return null;
+}
+
+// A toast for something that went wrong before legacy could show one: shown once legacy is up,
+// or dropped after two minutes of waiting for it.
+const pendingToasts = [];
+function toastWhenReady(message) {
+    pendingToasts.push(message);
+    if (pendingToasts.length > 1) return;
+    let tries = 0;
+    const flush = () => {
+        if (legacyReady() && globalThis.toasts?.showErrorNotification) {
+            for (const text of pendingToasts.splice(0)) {
+                try {
+                    globalThis.toasts.showErrorNotification({ message: text, timeoutDelayMs: 20000 });
+                } catch (e) {
+                    console.warn("OldTweetDeck:", text);
+                }
+            }
+            return;
+        }
+        if (++tries > 24) {
+            for (const text of pendingToasts.splice(0)) console.warn("OldTweetDeck:", text);
+            return;
+        }
+        const timer = setTimeout(flush, 5000);
+        if (timer && typeof timer.unref === "function") timer.unref(); // node: a test need not wait for it
+    };
+    flush();
 }
 
 // Only the requests in REQUEST_LABELS are reported: startup depends on the first three, and the
@@ -1109,6 +1548,31 @@ function notificationsUrl(cursor) {
     const variables = { timeline_type: "All", count: 20 };
     if (cursor) variables.cursor = cursor;
     return `${NEW_API}/MSIb-PAcnu9OBUe56f_DHQ/NotificationsTimeline?${generateParams(NOTIFICATIONS_TIMELINE_FEATURES, variables)}`;
+}
+
+// Which cursor a Notifications or Mentions request carries. Scrolling down takes the column's own
+// bottom cursor. A poll for new entries takes the top cursor of the last page, as x.com's own
+// polling does (a page with nothing new is a few hundred bytes, against the whole top page every
+// seven seconds), and the whole top page is read again every TOP_RESYNC_INTERVAL in case an entry
+// slipped past the cursor (the doubt of Phase 2-a was about all.json; GraphQL is what x.com polls
+// this way). localStorage.OTDnotificationsTopCursor = "0" reads the whole page every time, as
+// before; the all.json source always does.
+function notificationsPollCursor(xhr, prefix) {
+    const { user_id, since_id, max_id } = xhr.storage;
+    if (!since_id && max_id) {
+        const bottom = cursors[`${prefix}-${user_id}-bottom`];
+        if (bottom) return bottom;
+    }
+    const feedKey = `notifications-top-${user_id}`;
+    if (since_id && localStorage.OTDnotificationsTopCursor !== "0" && localStorage.OTDnotificationsSource !== "all.json" && !topFetchDue(feedKey)) {
+        const top = cursors[`${prefix}-${user_id}-top`];
+        if (top) {
+            xhr.storage.topPoll = true;
+            return top;
+        }
+    }
+    noteTopFetch(feedKey);
+    return undefined;
 }
 
 function notificationsTimeline(data) {
@@ -1420,6 +1884,12 @@ const GRAPHQL_OPERATIONS = {
     ListAddMember: ["JetfuelWrapper~bundle.AudioSpaceDetail", "JetfuelWrapper"],
     ListRemoveMember: ["JetfuelWrapper~bundle.AudioSpaceDetail", "JetfuelWrapper"],
     Bookmarks: ["bundle.Birdwatch~bundle.Compose~bundle.Display", "bundle.Bookmarks"],
+    // what stands in for lists/ownerships, lists/subscriptions, blocks/ids and mutes/users/ids
+    CombinedLists: ["JetfuelWrapper~bundle.AudioSpaceDetail", "JetfuelWrapper"],
+    BlockedAccountsAll: [],
+    MutedAccounts: [],
+    // Better TweetDeck's reply restriction (see the route for it)
+    ConversationControlChange: [],
 };
 // One read fetches at most this many chunks / bytes besides main.js, and tries at most
 // `perOperation` chunks for one operation. An operation still missing keeps its saved entry, if any,
@@ -1428,14 +1898,70 @@ const GRAPHQL_DISCOVERY_BUDGET = { chunks: 12, bytes: 4e6, perOperation: 4 };
 // A saved table missing an operation is read again this often even when main.js is unchanged.
 const GRAPHQL_INCOMPLETE_RETRY = 24 * 60 * 60 * 1000;
 const GRAPHQL_REFRESH_INTERVAL = 10 * 60 * 1000;
-// GraphQL requests in the first seconds after startup wait, briefly, for the first read.
-const GRAPHQL_STARTUP_WAIT = { within: 15000, atMost: 4000 };
+// GraphQL requests in the first seconds after startup wait for the first read: briefly when a
+// saved table stands in meanwhile, longer on a first run, when only the built-in copy below does.
+const GRAPHQL_STARTUP_WAIT = { within: 15000, atMost: 4000, firstRun: 10000 };
 const GRAPHQL_DECLARATION = /queryId:"([\w-]{22})",operationName:"(\w+)",operationType:"(?:query|mutation)",metadata:\{featureSwitches:\[([^\]]*)\]/g;
+// x.com's declarations as last copied into this file: the table until the first read succeeds,
+// and for good when none does (a first run that cannot reach abs.twimg.com, or a change in the
+// declaration format above). Ids churn: between the 2026-10-23 and 2026-10-24 deploys 10 of the
+// first 20 changed, and the routes' own ids and features below are older still. The console says when
+// this copy is behind x.com; `node tools/graphql-builtin.mjs <saved table>` prints a fresh one.
+const GRAPHQL_BUILTIN_KEYS = {
+    homeLatestTimeline: ["rweb_video_screen_enabled","rweb_cashtags_enabled","profile_label_improvements_pcf_label_in_post_enabled","responsive_web_profile_redirect_enabled","rweb_tipjar_consumption_enabled","verified_phone_label_enabled","creator_subscriptions_tweet_preview_api_enabled","responsive_web_graphql_timeline_navigation_enabled","premium_content_api_read_enabled","communities_web_enable_tweet_community_results_fetch","c9s_tweet_anatomy_moderator_badge_enabled","responsive_web_grok_analyze_button_fetch_trends_enabled","responsive_web_grok_analyze_post_followups_enabled","rweb_cashtags_composer_attachment_enabled","responsive_web_jetfuel_frame","rweb_sports_post_context_enabled","responsive_web_grok_share_attachment_enabled","responsive_web_grok_annotations_enabled","articles_preview_enabled","responsive_web_edit_tweet_api_enabled","rweb_conversational_replies_downvote_enabled","graphql_is_translatable_rweb_tweet_is_translatable_enabled","view_counts_everywhere_api_enabled","longform_notetweets_consumption_enabled","responsive_web_twitter_article_tweet_consumption_enabled","content_disclosure_indicator_enabled","content_disclosure_ai_generated_indicator_enabled","responsive_web_grok_show_grok_translated_post","responsive_web_grok_analysis_button_from_backend","post_ctas_fetch_enabled","freedom_of_speech_not_reach_fetch_enabled","standardized_nudges_misinfo","tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled","longform_notetweets_rich_text_read_enabled","longform_notetweets_inline_media_enabled","responsive_web_nested_quote_preview_enabled","responsive_web_grok_image_annotation_enabled","responsive_web_grok_imagine_annotation_enabled","responsive_web_made_on_x_label_enabled","responsive_web_grok_community_note_auto_translation_is_enabled","responsive_web_enhance_cards_enabled"],
+    createTweet: ["premium_content_api_read_enabled","communities_web_enable_tweet_community_results_fetch","c9s_tweet_anatomy_moderator_badge_enabled","responsive_web_grok_analyze_button_fetch_trends_enabled","responsive_web_grok_analyze_post_followups_enabled","rweb_cashtags_composer_attachment_enabled","responsive_web_jetfuel_frame","rweb_sports_post_context_enabled","responsive_web_grok_share_attachment_enabled","responsive_web_grok_annotations_enabled","responsive_web_edit_tweet_api_enabled","rweb_conversational_replies_downvote_enabled","graphql_is_translatable_rweb_tweet_is_translatable_enabled","view_counts_everywhere_api_enabled","longform_notetweets_consumption_enabled","responsive_web_twitter_article_tweet_consumption_enabled","content_disclosure_indicator_enabled","content_disclosure_ai_generated_indicator_enabled","responsive_web_grok_show_grok_translated_post","responsive_web_grok_analysis_button_from_backend","post_ctas_fetch_enabled","longform_notetweets_rich_text_read_enabled","longform_notetweets_inline_media_enabled","profile_label_improvements_pcf_label_in_post_enabled","responsive_web_profile_redirect_enabled","rweb_tipjar_consumption_enabled","verified_phone_label_enabled","responsive_web_nested_quote_preview_enabled","articles_preview_enabled","rweb_cashtags_enabled","responsive_web_grok_community_note_auto_translation_is_enabled","freedom_of_speech_not_reach_fetch_enabled","standardized_nudges_misinfo","tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled","responsive_web_grok_image_annotation_enabled","responsive_web_grok_imagine_annotation_enabled","responsive_web_made_on_x_label_enabled","responsive_web_graphql_timeline_navigation_enabled"],
+    userByRestId: ["hidden_profile_subscriptions_enabled","profile_label_improvements_pcf_label_in_post_enabled","responsive_web_profile_redirect_enabled","rweb_tipjar_consumption_enabled","verified_phone_label_enabled","highlights_tweets_tab_ui_enabled","responsive_web_twitter_article_notes_tab_enabled","subscriptions_feature_can_gift_premium","creator_subscriptions_tweet_preview_api_enabled","responsive_web_graphql_timeline_navigation_enabled"],
+    userByScreenName: ["hidden_profile_subscriptions_enabled","profile_label_improvements_pcf_label_in_post_enabled","responsive_web_profile_redirect_enabled","rweb_tipjar_consumption_enabled","verified_phone_label_enabled","subscriptions_verification_info_is_identity_verified_enabled","subscriptions_verification_info_verified_since_enabled","highlights_tweets_tab_ui_enabled","responsive_web_twitter_article_notes_tab_enabled","subscriptions_feature_can_gift_premium","creator_subscriptions_tweet_preview_api_enabled","responsive_web_graphql_timeline_navigation_enabled"],
+    usersByRestIds: ["profile_label_improvements_pcf_label_in_post_enabled","responsive_web_profile_redirect_enabled","rweb_tipjar_consumption_enabled","verified_phone_label_enabled","responsive_web_graphql_timeline_navigation_enabled"],
+};
+const GRAPHQL_BUILTIN = {
+    date: "2026-10-25",
+    main: "https://abs.twimg.com/responsive-web/client-web/main.a8ff362f9b84a869a.js",
+    ops: {
+        HomeLatestTimeline: { id: "KQPfcqQJJqF6M0D77p3JKw", features: "homeLatestTimeline", chunk: "shared~bundle.Compose~bundle.HomeTimeline~bundle.LoggedInMain" },
+        NotificationsTimeline: { id: "MSIb-PAcnu9OBUe56f_DHQ", features: "homeLatestTimeline", chunk: "bundle.Notifications" },
+        CreateTweet: { id: "5CVj-J0FZWyGgJpcjeBJEA", features: "createTweet", chunk: "main" },
+        CreateRetweet: { id: "mbRO74GrOvSfRcJnlMapnQ", features: [], chunk: "main" },
+        DeleteRetweet: { id: "ZyZigVsNiFO6v1dEks1eWg", features: [], chunk: "main" },
+        DeleteTweet: { id: "nxpZCY2K-I6QoFHAHeojFQ", features: [], chunk: "main" },
+        FavoriteTweet: { id: "lI07N6Otwv1PhnEgXILM7A", features: [], chunk: "main" },
+        UnfavoriteTweet: { id: "ZYKSe-w7KEslx3JhSIk5LA", features: [], chunk: "main" },
+        TweetDetail: { id: "gJoREC4Bspo4kJ0ax9C3sQ", features: "homeLatestTimeline", chunk: "main" },
+        SearchTimeline: { id: "f7SuGIm11eLbQs7c0K9X9w", features: "homeLatestTimeline", chunk: "main" },
+        Likes: { id: "mzOgReEsktOIIXzWkqf0ig", features: "homeLatestTimeline", chunk: "main" },
+        UserTweetsAndReplies: { id: "MbxTcSWPt8RWRFMwenOtyQ", features: "homeLatestTimeline", chunk: "main" },
+        UserByRestId: { id: "mxaYWwt52eAb6OAzYHMVzg", features: "userByRestId", chunk: "main" },
+        UserByScreenName: { id: "AMIBMjtxEEATh4z8V9GtRg", features: "userByScreenName", chunk: "main" },
+        UsersByRestIds: { id: "ubfbnAM4qTlMTOYleYhXSg", features: "usersByRestIds", chunk: "main" },
+        ListLatestTweetsTimeline: { id: "uV0pbd0DrW8hTbMrtZ1SYQ", features: "homeLatestTimeline", chunk: "shared~JetfuelWrapper~bundle.AudioSpaceDetail~bundle.AudioSpaceDiscovery~bundle.AudioSpacebarScreen~bundle.Bi" },
+        ListMembers: { id: "fFCNliJG5Gq4yEnINo6-1A", features: "homeLatestTimeline", chunk: "shared~JetfuelWrapper~bundle.AudioSpaceDetail~bundle.AudioSpaceDiscovery~bundle.AudioSpacebarScreen~bundle.Bi" },
+        ListAddMember: { id: "-Kf1YVC1rNKkPvPFk7YXZw", features: "usersByRestIds", chunk: "shared~JetfuelWrapper~bundle.AudioSpaceDetail~bundle.AudioSpaceDiscovery~bundle.AudioSpacebarScreen~bundle.Bi" },
+        ListRemoveMember: { id: "_2o1-wSMWGFSi5HUscn1Hw", features: "usersByRestIds", chunk: "shared~JetfuelWrapper~bundle.AudioSpaceDetail~bundle.AudioSpaceDiscovery~bundle.AudioSpacebarScreen~bundle.Bi" },
+        Bookmarks: { id: "zFGFGLIm1akEv8PE3uut8w", features: "homeLatestTimeline", chunk: "shared~bundle.Birdwatch~bundle.Compose~bundle.Display~bundle.Grok~bundle.GrokDrawer~bundle.News~bundle.Ocf~bu" },
+        CombinedLists: { id: "60iDk55u-rTx1qB8KQMZKw", features: "homeLatestTimeline", chunk: "shared~JetfuelWrapper~bundle.AudioSpaceDetail~bundle.AudioSpaceDiscovery~bundle.AudioSpacebarScreen~bundle.Bi" },
+        BlockedAccountsAll: { id: "jNDoO-7f4EPnrF3PvSy2XQ", features: "homeLatestTimeline", chunk: "main" },
+        MutedAccounts: { id: "Sc8HpW2C7W_mOM0rvJJNhg", features: "homeLatestTimeline", chunk: "main" },
+        ConversationControlChange: { id: "JWeo7tCAhI_HwcuPcL4JrQ", features: [], chunk: "main" },
+    },
+    values: {"articles_preview_enabled":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"communities_web_enable_tweet_community_results_fetch":true,"content_disclosure_ai_generated_indicator_enabled":true,"content_disclosure_indicator_enabled":true,"creator_subscriptions_tweet_preview_api_enabled":true,"freedom_of_speech_not_reach_fetch_enabled":true,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"hidden_profile_subscriptions_enabled":true,"highlights_tweets_tab_ui_enabled":true,"longform_notetweets_consumption_enabled":true,"longform_notetweets_inline_media_enabled":false,"longform_notetweets_rich_text_read_enabled":true,"post_ctas_fetch_enabled":false,"premium_content_api_read_enabled":false,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"responsive_web_enhance_cards_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true,"responsive_web_grok_analysis_button_from_backend":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"responsive_web_grok_annotations_enabled":true,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_jetfuel_frame":true,"responsive_web_made_on_x_label_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"responsive_web_profile_redirect_enabled":true,"responsive_web_twitter_article_notes_tab_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"rweb_cashtags_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"rweb_sports_post_context_enabled":true,"rweb_tipjar_consumption_enabled":false,"rweb_video_screen_enabled":false,"standardized_nudges_misinfo":true,"subscriptions_feature_can_gift_premium":false,"subscriptions_verification_info_is_identity_verified_enabled":true,"subscriptions_verification_info_verified_since_enabled":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"verified_phone_label_enabled":false,"view_counts_everywhere_api_enabled":true},
+};
 
+function builtinGraphqlTable() {
+    const ops = {};
+    for (const [name, op] of Object.entries(GRAPHQL_BUILTIN.ops)) {
+        const features = typeof op.features === "string" ? GRAPHQL_BUILTIN_KEYS[op.features] : op.features;
+        ops[name] = { id: op.id, features: [...(features || [])], chunk: op.chunk };
+    }
+    return { main: GRAPHQL_BUILTIN.main, fetchedAt: 0, builtin: true, ops, values: { ...GRAPHQL_BUILTIN.values } };
+}
+
+const savedGraphqlTable = validGraphqlTable(readStoredJSON(GRAPHQL_REGISTRY_KEY));
 const graphqlRegistry = {
-    table: validGraphqlTable(readStoredJSON(GRAPHQL_REGISTRY_KEY)),
+    table: savedGraphqlTable ?? builtinGraphqlTable(),
+    hadSaved: !!savedGraphqlTable, // a first run has only the built-in table, and waits longer for the read
     pending: null, // the read in flight
     lastRefresh: 0, // when a 400 / 404 last forced one
+    lastError: null, // why the last read failed, or fell short; for the notices
     noted: new Set(), // differences to the routes' values already logged this session
 };
 
@@ -1536,6 +2062,7 @@ async function discoverGraphqlOperations({ force = false } = {}) {
     const wanted = new Set(Object.keys(GRAPHQL_OPERATIONS));
     const incomplete = saved && [...wanted].some((op) => !saved.ops[op]) && Date.now() - (saved.fetchedAt || 0) > GRAPHQL_INCOMPLETE_RETRY;
     let ops;
+    let declared;
     if (saved && saved.main === main && !force && !incomplete) {
         ops = saved.ops;
     } else {
@@ -1570,13 +2097,19 @@ async function discoverGraphqlOperations({ force = false } = {}) {
                 }
             }
         }
+        declared = Object.keys(ops).length;
         // what was not found keeps its last entry, which is at least as new as the route's
         for (const op of wanted) if (!ops[op] && saved?.ops?.[op]) ops[op] = saved.ops[op];
     }
+    // An operation this file learned after the saved table was written (the saved table is kept
+    // as it is otherwise) takes the built-in entry until the next full read declares it.
+    const builtin = builtinGraphqlTable();
+    for (const op of wanted) if (!ops[op] && builtin.ops[op]) ops = { ...ops, [op]: builtin.ops[op] };
     const keys = new Set();
     for (const op of Object.values(ops)) for (const key of op.features || []) keys.add(key);
     const values = featureValuesFromHtml(html, keys) ?? saved?.values ?? {};
     const table = { main, fetchedAt: Date.now(), ops, values };
+    if (declared !== undefined) table.declared = declared; // by this read; absent when only the page was read
     graphqlRegistry.table = table;
     try {
         localStorage[GRAPHQL_REGISTRY_KEY] = JSON.stringify(table);
@@ -1592,17 +2125,52 @@ function startGraphqlDiscovery(reason, options) {
     graphqlRegistry.pending = discoverGraphqlOperations(options).then(
         (table) => {
             graphqlRegistry.pending = null;
+            const total = Object.keys(GRAPHQL_OPERATIONS).length;
             const known = Object.keys(GRAPHQL_OPERATIONS).filter((op) => table.ops[op]).length;
-            console.log(`OldTweetDeck: GraphQL operations read ${reason}: ${known} of ${Object.keys(GRAPHQL_OPERATIONS).length} known, ${table.main.split("/").pop()}`);
+            const declared = table.declared === undefined ? "" : `, ${table.declared} declared by this deploy`;
+            console.log(`OldTweetDeck: GraphQL operations read ${reason}: ${known} of ${total} known${declared}, ${table.main.split("/").pop()}`);
+            // A deploy whose bundles declare few of them means the format changed, or the chunks
+            // moved: the table is as new as the saved one at best, and goes stale with the next deploy.
+            if (table.declared !== undefined && table.declared < total / 2) {
+                graphqlRegistry.lastError = `only ${table.declared} of ${total} operations were found in x.com's bundles`;
+                noteRegistryProblem(graphqlRegistry.lastError);
+            } else {
+                graphqlRegistry.lastError = null;
+            }
+            const behind = Object.keys(GRAPHQL_BUILTIN.ops).filter((op) => table.ops[op] && table.ops[op].id !== GRAPHQL_BUILTIN.ops[op].id);
+            if (behind.length) noteGraphqlDifference("builtin", `the built-in GraphQL table (${GRAPHQL_BUILTIN.date}) is behind x.com for ${behind.join(", ")}`);
             return table;
         },
         (e) => {
             graphqlRegistry.pending = null;
-            console.warn(`OldTweetDeck: could not read x.com's GraphQL operations ${reason}; using ${graphqlRegistry.table ? "the saved ones" : "the built-in ids"}`, e);
+            graphqlRegistry.lastError = e?.message || String(e);
+            const using = graphqlRegistry.table?.builtin ? `the built-in table (${GRAPHQL_BUILTIN.date})` : "the saved table";
+            console.warn(`OldTweetDeck: could not read x.com's GraphQL operations ${reason}; using ${using}`, e);
+            if (graphqlRegistry.table?.builtin) noteRegistryProblem(graphqlRegistry.lastError);
             return graphqlRegistry.table;
         }
     );
     return graphqlRegistry.pending;
+}
+
+// Said once per session, once legacy is up. The built-in table is all a fresh install has, and
+// it goes stale within days; a saved table that a new deploy could not be read into, likewise.
+let registryProblemNoted = false;
+function noteRegistryProblem(detail) {
+    if (registryProblemNoted) return;
+    registryProblemNoted = true;
+    const using = graphqlRegistry.table?.builtin ? `its built-in copy from ${GRAPHQL_BUILTIN.date}` : "the copy it saved earlier";
+    toastWhenReady(`OldTweetDeck could not read x.com's current API settings (${detail}) and is using ${using}. `
+        + "If columns stop loading, reload TweetDeck; if that does not help, OldTweetDeck needs an update.");
+}
+
+// Why a request with a known operation was rejected, as far as this file can tell.
+function queryIdFailureDetail(op) {
+    if (graphqlRegistry.lastError) return `OldTweetDeck could not read x.com's current settings: ${graphqlRegistry.lastError}`;
+    const known = graphqlRegistry.table?.ops?.[op.name];
+    if (known && known.id !== op.id) return "a newer query id was read since, and the next request uses it";
+    if (graphqlRegistry.table?.builtin) return `the id came from OldTweetDeck's built-in copy of ${GRAPHQL_BUILTIN.date}`;
+    return "the id is the one x.com's own bundle names";
 }
 
 function graphqlOperationOf(url) {
@@ -1653,7 +2221,7 @@ function applyGraphqlRegistryUrl(xhr) {
     if (!known || typeof known.id !== "string") return false;
     let url = xhr.modUrl;
     if (known.id !== op.id) {
-        noteGraphqlDifference(`${op.name}:id`, `${op.name} query id ${op.id} -> ${known.id} (x.com's bundle)`);
+        noteGraphqlDifference(`${op.name}:id`, `${op.name} query id ${op.id} -> ${known.id} (${table.builtin ? `built-in table of ${GRAPHQL_BUILTIN.date}` : "x.com's bundle"})`);
         url = url.replace(`/i/api/graphql/${op.id}/${op.name}`, `/i/api/graphql/${known.id}/${op.name}`);
     }
     if (mode !== "ids" && Array.isArray(known.features) && known.features.length) {
@@ -1713,7 +2281,8 @@ function applyGraphqlRegistryBody(xhr, body) {
 
 async function awaitGraphqlRegistry() {
     if (!graphqlRegistry.pending || Date.now() - OTD_INIT_TIME > GRAPHQL_STARTUP_WAIT.within) return;
-    await Promise.race([graphqlRegistry.pending, new Promise((resolve) => setTimeout(resolve, GRAPHQL_STARTUP_WAIT.atMost))]);
+    const atMost = graphqlRegistry.hadSaved ? GRAPHQL_STARTUP_WAIT.atMost : GRAPHQL_STARTUP_WAIT.firstRun;
+    await Promise.race([graphqlRegistry.pending, new Promise((resolve) => setTimeout(resolve, atMost))]);
 }
 
 // A 400 or 404 on a known operation usually means X retired its query id, or wants a feature key
@@ -1730,6 +2299,9 @@ function graphqlRegistryOnResponse(xhr) {
         // a response that is not text; the status is what matters
     }
     console.warn(`OldTweetDeck: ${status} for GraphQL ${op.name} (${op.id}): ${body}`);
+    if (xhr.storage && !xhr.storage.failure) {
+        xhr.storage.failure = { kind: "query-id", status, operation: op.name, detail: queryIdFailureDetail(op) };
+    }
     const now = Date.now();
     if (now - graphqlRegistry.lastRefresh < GRAPHQL_REFRESH_INTERVAL) return;
     graphqlRegistry.lastRefresh = now;
@@ -1737,6 +2309,53 @@ function graphqlRegistryOnResponse(xhr) {
 }
 
 startGraphqlDiscovery("at startup");
+
+// ---- the login account when verify_credentials is gone ----------------------------------------
+
+// Legacy starts with GET /1.1/account/verify_credentials.json and cannot start without it
+// (updateAccountFromVerifySuccess in bundle.js throws). x.com itself stopped calling it, and X
+// retired help/configuration.json the same way in 2026-10 (410). The logged-in x.com page, which
+// the registry and challenge.js already fetch, carries the same user in the same v1.1 shape at
+// window.__INITIAL_STATE__.entities.users.entities[session.user_id]; the profile X confirmed last
+// time is in localStorage too. Either stands in when X refuses, for the account the session's
+// twid cookie names. An acting (Teams) account has no stand-in: only X can confirm it.
+let pageLoginUser = null;
+
+function readPageLoginUser() {
+    if (typeof fetch !== "function") return Promise.resolve(null);
+    return homepageHtml().then((html) => {
+        const state = extractAssignedJSON(html);
+        const id = state?.session?.user_id;
+        const user = id ? state?.entities?.users?.entities?.[id] : null;
+        if (user?.id_str && user.screen_name) pageLoginUser = user;
+        return pageLoginUser;
+    }).catch((e) => {
+        console.warn("OldTweetDeck: could not read the login account from x.com's page", e);
+        return null;
+    });
+}
+
+function cookieUserId() {
+    try {
+        const m = /(?:^|;\s*)twid=([^;]*)/.exec(document.cookie);
+        return m ? decodeURIComponent(m[1]).replace(/^u=/, "") : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function standInLoginUser() {
+    const session = cookieUserId();
+    if (pageLoginUser && (!session || String(pageLoginUser.id_str) === session)) {
+        return { user: pageLoginUser, source: "the profile on x.com's page" };
+    }
+    if (session && verifiedUser?.id_str && verifiedUser.screen_name && String(verifiedUser.id_str) === session) {
+        return { user: verifiedUser, source: "the profile X confirmed last time" };
+    }
+    return null;
+}
+
+readPageLoginUser();
 
 function extractAssignedJSON(html, varName = "window.__INITIAL_STATE__") {
     const assignPos = html.indexOf(varName);
@@ -1873,6 +2492,64 @@ function extractAssignedJSON(html, varName = "window.__INITIAL_STATE__") {
       return out;
     }
 }
+// Notification types this file does not turn into a legacy action, said once each per session
+// (the Notifications column is read every few seconds).
+const unknownNotificationsNoted = new Set();
+function noteUnknownNotification(type, why) {
+    if (unknownNotificationsNoted.has(type)) return;
+    unknownNotificationsNoted.add(type);
+    console.warn(`OldTweetDeck: notification type ${type} is not shown${why ? ` (${why})` : ""}`);
+}
+
+// "{{user}} accepted your follow request": legacy has no action for it (X added the notification
+// after TweetDeck's API), so one is derived from its follow action: the same card and user menu,
+// another line of text. TwitterAction._getActionConstructor is what processRESTAction asks for
+// the constructor of an action name; it answers null, and the action is dropped, for names it does
+// not know. Done lazily, from the Notifications route, because the route runs only once legacy is up.
+const FOLLOW_REQUEST_ACCEPTED = "follow_request_accepted";
+let followRequestActionReady = false;
+function ensureFollowRequestAction() {
+    if (followRequestActionReady) return true;
+    try {
+        const Action = TD.services.TwitterAction;
+        const Follow = TD.services.TwitterActionFollow;
+        if (typeof Action !== "function" || typeof Follow !== "function" || typeof Action._getActionConstructor !== "function") return false;
+        const Accepted = function (account) {
+            this.account = account;
+        };
+        Accepted.prototype = new Follow();
+        Accepted.prototype.action = FOLLOW_REQUEST_ACCEPTED;
+        Accepted.prototype.isAboutYou = function () {
+            return true;
+        };
+        Accepted.prototype.isOwnChirp = function () {
+            return false;
+        };
+        Accepted.prototype.generateText = function () {
+            const template = "{{{user}}} accepted your follow request";
+            const user = this.following;
+            this.text = TD.ui.template.toHtml(template, { user: user.name });
+            this.htmlText = TD.ui.template.toHtml(template, {
+                user: TD.ui.template.render("text/user_link_fullname", {
+                    profileUrl: `https://x.com/${user.screenName || user.screen_name}`,
+                    name: user.emojifiedName || user.name,
+                    withBold: true,
+                    unsafe: true,
+                }),
+            });
+        };
+        const original = Action._getActionConstructor;
+        Action._getActionConstructor = function (name) {
+            return name === FOLLOW_REQUEST_ACCEPTED ? Accepted : original.call(this, name);
+        };
+        TD.services.TwitterActionFollowRequestAccepted = Accepted;
+        followRequestActionReady = true;
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
 // Legacy TweetDeck derives a chirp id from the REST action object (generateInternalID on
 // TwitterActionOnTweet / TwitterActionFollow in bundle.js); mirror it so we can ask its pollers
 // whether they already hold a notification. "reply" renders as a mention, "quote" as quoted_tweet.
@@ -2109,7 +2786,12 @@ function legacyListFromGraph(data, fallback) {
         || data?.data?.listAddMember
         || data?.data?.list_remove_member
         || data?.data?.listRemoveMember;
-    const node = raw && typeof raw === "object" ? raw : {};
+    return legacyListFromNode(raw && typeof raw === "object" ? raw : {}, fallback);
+}
+
+// A GraphQL List node (a mutation's result, or a TimelineTwitterList item) as the v1.1 list
+// legacy's TwitterList.fromJSONObject reads.
+function legacyListFromNode(node, fallback = {}) {
     const id = node.id_str || node.rest_id || fallback.listId || "";
     const owner = legacyUserFromGraph(node.user_results?.result || node.user_result?.result) || {
         id_str: "0",
@@ -2417,7 +3099,7 @@ const proxyRoutes = [
                 }
                 variables.listId = list_id;
                 xhr.storage.list_id = list_id;
-                xhr.modUrl = `${NEW_API}/l411pL-GRg-AKo_a2rmYjg/ListLatestTweetsTimeline?${generateParams(
+                xhr.modUrl = `${NEW_API}/uV0pbd0DrW8hTbMrtZ1SYQ/ListLatestTweetsTimeline?${generateParams(
                     features,
                     variables
                 )}`;
@@ -2588,7 +3270,7 @@ const proxyRoutes = [
                 }
                 xhr.storage.user_id = variables.userId;
 
-                xhr.modUrl = `${NEW_API}/wxoVeDnl0mP7VLhe6mTOdg/UserTweetsAndReplies?${generateParams(
+                xhr.modUrl = `${NEW_API}/MbxTcSWPt8RWRFMwenOtyQ/UserTweetsAndReplies?${generateParams(
                     features,
                     variables
                 )}`;
@@ -2751,7 +3433,7 @@ const proxyRoutes = [
             if (bn && bookmarkTimes[`${user_id}:${bn}`] !== undefined) {
                 xhr.storage.time = bookmarkTimes[`${user_id}:${bn}`];
             }
-            xhr.modUrl = `${NEW_API}/3OjEFzT2VjX-X7w4KYBJRg/Bookmarks?${generateParams(
+            xhr.modUrl = `${NEW_API}/zFGFGLIm1akEv8PE3uut8w/Bookmarks?${generateParams(
                 xhr.storage.features,
                 xhr.storage.variables
             )}`;
@@ -2861,13 +3543,9 @@ const proxyRoutes = [
         // Which account's cursor applies is only known once legacy has set its headers.
         openHandler: deferOpen,
         beforeSend: (xhr) => {
-            const user_id = requestUserId(xhr);
-            xhr.storage.user_id = user_id;
-            let cursor;
-            if (!xhr.storage.since_id && xhr.storage.max_id && cursors[`notifications-${user_id}-bottom`]) {
-                cursor = cursors[`notifications-${user_id}-bottom`];
-            }
-            xhr.storage.topPage = !cursor;
+            xhr.storage.user_id = requestUserId(xhr);
+            const cursor = notificationsPollCursor(xhr, "notifications");
+            xhr.storage.topPage = !cursor || !!xhr.storage.topPoll;
             xhr.modUrl = notificationsUrl(cursor);
             openDeferred(xhr);
         },
@@ -2973,11 +3651,19 @@ const proxyRoutes = [
                                     break;
                                 }
                                 case "follow_from_recommended_user":
-                                case "users_followed_you": {
+                                case "users_followed_you":
+                                case "users_accepted_your_follow_request": {
+                                    // X added "accepted your follow request" after legacy's API. Its action is derived
+                                    // from legacy's follow action once legacy is up (ensureFollowRequestAction).
+                                    const action = type === "users_accepted_your_follow_request" ? FOLLOW_REQUEST_ACCEPTED : "follow";
+                                    if (action === FOLLOW_REQUEST_ACCEPTED && !ensureFollowRequestAction()) {
+                                        noteUnknownNotification(type, "legacy's follow action is not loaded");
+                                        break;
+                                    }
                                     const nf = go.notifications[notif.id];
                                     const users = nf.template.aggregateUserActionsV1.fromUsers.map(u => u.user.id);
                                     // legacy builds this id from (source user, target user) and OTD hands it the same user for both
-                                    const ids = users.map(userId => legacyNotificationId("follow", userId, userId));
+                                    const ids = users.map(userId => legacyNotificationId(action, userId, userId));
                                     const fresh = freshAggregateActions(xhr.storage.user_id, notif.id, sortIndex, ids);
                                     for(let i = 0; i < users.length; i++) {
                                         const id = ids[i];
@@ -2987,7 +3673,7 @@ const proxyRoutes = [
                                         if(!shouldDeliver(id)) continue;
                                         const position = stableNotificationPosition(id, +sortIndex - i);
                                         notifications.push({
-                                            action: "follow",
+                                            action,
                                             created_at: formatTwitterStyle(new Date(position)),
                                             max_position: position+"",
                                             min_position: position+"",
@@ -3006,7 +3692,7 @@ const proxyRoutes = [
                                 case "generic_safety_label_added":
                                     break;
                                 default:
-                                    console.warn(`Unknown notification type: ${type}`);
+                                    noteUnknownNotification(type);
                             }
                         }
                     } catch (e) {
@@ -3042,13 +3728,9 @@ const proxyRoutes = [
         // Which account's cursor applies is only known once legacy has set its headers.
         openHandler: deferOpen,
         beforeSend: (xhr) => {
-            const user_id = requestUserId(xhr);
-            xhr.storage.user_id = user_id;
-            let cursor;
-            if (!xhr.storage.since_id && xhr.storage.max_id && cursors[`mentions-${user_id}-bottom`]) {
-                cursor = cursors[`mentions-${user_id}-bottom`];
-            }
-            xhr.storage.topPage = !cursor;
+            xhr.storage.user_id = requestUserId(xhr);
+            const cursor = notificationsPollCursor(xhr, "mentions");
+            xhr.storage.topPage = !cursor || !!xhr.storage.topPoll;
             xhr.modUrl = notificationsUrl(cursor);
             openDeferred(xhr);
         },
@@ -3142,7 +3824,7 @@ const proxyRoutes = [
                 }
                 xhr.storage.user_id = variables.userId;
 
-                xhr.modUrl = `${NEW_API}/vni8vUvtZvJoIsl49VPudg/Likes?${generateParams(
+                xhr.modUrl = `${NEW_API}/mzOgReEsktOIIXzWkqf0ig/Likes?${generateParams(
                     features,
                     variables
                 )}`;
@@ -3202,6 +3884,40 @@ const proxyRoutes = [
         },
     },
     // Liking / unliking
+    restOrGraphqlRoute("/1.1/lists/ownerships.json", (xhr) => answerListsFromGraph(xhr, "owned")),
+    restOrGraphqlRoute("/1.1/lists/subscriptions.json", (xhr) => answerListsFromGraph(xhr, "subscribed")),
+    restOrGraphqlRoute("/1.1/blocks/ids.json", (xhr) => answerIdsFromGraph(xhr, "BlockedAccountsAll")),
+    restOrGraphqlRoute("/1.1/mutes/users/ids.json", (xhr) => answerIdsFromGraph(xhr, "MutedAccounts")),
+    emptyWhenRetiredRoute("/1.1/users/contributees.json"),
+    emptyWhenRetiredRoute("/1.1/users/contributees/pending.json"),
+    emptyWhenRetiredRoute("/1.1/saved_searches/list.json"),
+    {
+        path: "/1.1/help/configuration.json",
+        method: "GET",
+        openHandler: () => {},
+        sendHandler: emulateResponse,
+        afterRequest: () => HELP_CONFIGURATION,
+    },
+    // Better TweetDeck restricts who can reply by POSTing ConversationControlChange to the old
+    // api.x.com/graphql/<id>/ path with a 2023 query id, and shows nothing when that fails. Send it
+    // where x.com sends it; once the URL is x.com's, the registry keeps the id and the body's
+    // queryId current like any other operation.
+    {
+        path: /^\/graphql\/[\w-]+\/ConversationControlChange$/,
+        method: "POST",
+        beforeRequest: (xhr) => {
+            const table = graphqlRegistry.table || builtinGraphqlTable();
+            const known = table.ops.ConversationControlChange || builtinGraphqlTable().ops.ConversationControlChange;
+            xhr.modUrl = `${NEW_API}/${known.id}/ConversationControlChange`;
+        },
+        beforeSendHeaders: (xhr) => {
+            xhr.modReqHeaders["Content-Type"] = "application/json";
+            if (!getRequestHeader(xhr, "Authorization")) xhr.modReqHeaders["Authorization"] = PUBLIC_TOKENS[0];
+            if (!getRequestHeader(xhr, "X-Csrf-Token")) xhr.modReqHeaders["X-Csrf-Token"] = csrfToken();
+            xhr.modReqHeaders["X-Twitter-Auth-Type"] = "OAuth2Session";
+            xhr.modReqHeaders["X-Twitter-Active-User"] = "yes";
+        },
+    },
     {
         path: /\/1\.1\/favorites\/.*\.json/,
         method: "POST",
@@ -3316,7 +4032,7 @@ const proxyRoutes = [
                 const variables = { listId: params.get("list_id"), count };
                 const cursor = params.get("cursor");
                 if (cursor && cursor !== "-1" && cursor !== "0") variables.cursor = cursor;
-                xhr.modUrl = `${NEW_API}/yQ_0-CTekcCY2oFRTskpSw/ListMembers?${generateParams(
+                xhr.modUrl = `${NEW_API}/fFCNliJG5Gq4yEnINo6-1A/ListMembers?${generateParams(
                     LIST_MEMBERS_FEATURES,
                     variables
                 )}`;
@@ -3418,7 +4134,7 @@ const proxyRoutes = [
 
                 xhr.storage.query = variables.rawQuery;
                 xhr.storage.cursor = params.get("since_id");
-                xhr.modUrl = `${NEW_API}/l0dLMlz_fHji3FT8AfrvxA/SearchTimeline?${generateParams(
+                xhr.modUrl = `${NEW_API}/f7SuGIm11eLbQs7c0K9X9w/SearchTimeline?${generateParams(
                     features,
                     variables
                 )}`;
@@ -3554,7 +4270,7 @@ const proxyRoutes = [
                     responsive_web_enhance_cards_enabled: false,
                 };
 
-                xhr.modUrl = `${NEW_API}/nK1dw4oV3k4w5TdtcAdSww/SearchTimeline?${generateParams(
+                xhr.modUrl = `${NEW_API}/f7SuGIm11eLbQs7c0K9X9w/SearchTimeline?${generateParams(
                     features,
                     variables
                 )}`;
@@ -3628,7 +4344,7 @@ const proxyRoutes = [
         path: "/1.1/statuses/update.json",
         method: "POST",
         beforeRequest: (xhr) => {
-            xhr.modUrl = `https://${location.hostname}/i/api/graphql/oB-5XsHNAbjvARJEc8CZFw/CreateTweet`;
+            xhr.modUrl = `https://${location.hostname}/i/api/graphql/5CVj-J0FZWyGgJpcjeBJEA/CreateTweet`;
         },
         beforeSendHeaders: (xhr) => {
             xhr.modReqHeaders["Content-Type"] = "application/json";
@@ -3670,7 +4386,7 @@ const proxyRoutes = [
             return JSON.stringify({
                 variables,
                 features: {"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"tweetypie_unmention_optimization_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"tweet_awards_web_tipping_enabled":false,"creator_subscriptions_quote_tweet_preview_enabled":false,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":true,"articles_preview_enabled":true,"rweb_video_timestamps_enabled":true,"rweb_tipjar_consumption_enabled":true,"responsive_web_graphql_exclude_directive_enabled":true,"verified_phone_label_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true,"responsive_web_enhance_cards_enabled":false},
-                queryId: "oB-5XsHNAbjvARJEc8CZFw",
+                queryId: "5CVj-J0FZWyGgJpcjeBJEA",
             });
         },
         afterRequest: (xhr) => {
@@ -3698,7 +4414,7 @@ const proxyRoutes = [
                 /\/1.1\/statuses\/retweet\/(\d+).json/
             )[1];
             xhr.storage.retweeter = getCurrentUserId();
-            xhr.modUrl = `https://${location.hostname}/i/api/graphql/ojPdsZsimiJrUGLR1sjUtA/CreateRetweet`;
+            xhr.modUrl = `https://${location.hostname}/i/api/graphql/mbRO74GrOvSfRcJnlMapnQ/CreateRetweet`;
         },
         beforeSendHeaders: (xhr) => {
             xhr.modReqHeaders["Content-Type"] = "application/json";
@@ -3716,7 +4432,7 @@ const proxyRoutes = [
                     tweet_id: xhr.storage.tweet_id,
                     dark_request: false,
                 },
-                queryId: "ojPdsZsimiJrUGLR1sjUtA",
+                queryId: "mbRO74GrOvSfRcJnlMapnQ",
             });
         },
         afterRequest: (xhr) => {
@@ -3751,7 +4467,7 @@ const proxyRoutes = [
                 /\/1.1\/statuses\/unretweet\/(\d+).json/
             )[1];
             xhr.storage.retweeter = getCurrentUserId();
-            xhr.modUrl = `https://${location.hostname}/i/api/graphql/iQtK4dl5hBmXewYZuEOKVw/DeleteRetweet`;
+            xhr.modUrl = `https://${location.hostname}/i/api/graphql/ZyZigVsNiFO6v1dEks1eWg/DeleteRetweet`;
         },
         beforeSendHeaders: (xhr) => {
             xhr.modReqHeaders["Content-Type"] = "application/json";
@@ -3767,7 +4483,7 @@ const proxyRoutes = [
         beforeSendBody: (xhr, body) => {
             return JSON.stringify({
                 variables: { source_tweet_id: xhr.storage.tweet_id, dark_request: false },
-                queryId: "iQtK4dl5hBmXewYZuEOKVw",
+                queryId: "ZyZigVsNiFO6v1dEks1eWg",
             });
         },
         afterRequest: (xhr) => {
@@ -3801,7 +4517,7 @@ const proxyRoutes = [
             xhr.storage.tweet_id = originalUrl.pathname.match(
                 /\/1.1\/statuses\/show\/(\d+).json/
             )[1];
-            xhr.modUrl = `https://${location.hostname}/i/api/graphql/KwGBbJZc6DBx8EKmyQSP7g/TweetDetail?variables=${encodeURIComponent(
+            xhr.modUrl = `https://${location.hostname}/i/api/graphql/gJoREC4Bspo4kJ0ax9C3sQ/TweetDetail?variables=${encodeURIComponent(
                 JSON.stringify({
                     focalTweetId: xhr.storage.tweet_id,
                     with_rux_injections: false,
@@ -3873,7 +4589,7 @@ const proxyRoutes = [
         beforeRequest: (xhr) => {
             let originalUrl = new URL(xhr.originalUrl);
             xhr.storage.tweet_id = originalUrl.searchParams.get("id");
-            xhr.modUrl = `https://${location.hostname}/i/api/graphql/KwGBbJZc6DBx8EKmyQSP7g/TweetDetail?variables=${encodeURIComponent(
+            xhr.modUrl = `https://${location.hostname}/i/api/graphql/gJoREC4Bspo4kJ0ax9C3sQ/TweetDetail?variables=${encodeURIComponent(
                 JSON.stringify({
                     focalTweetId: xhr.storage.tweet_id,
                     with_rux_injections: false,
@@ -3948,7 +4664,7 @@ const proxyRoutes = [
             xhr.storage.tweet_id = originalUrl.pathname.match(
                 /\/1.1\/statuses\/destroy\/(\d+).json/
             )[1];
-            xhr.modUrl = `https://${location.hostname}/i/api/graphql/VaenaVgh5q5ih7kvyVjgtg/DeleteTweet`;
+            xhr.modUrl = `https://${location.hostname}/i/api/graphql/nxpZCY2K-I6QoFHAHeojFQ/DeleteTweet`;
         },
         beforeSendHeaders: (xhr) => {
             xhr.modReqHeaders["Content-Type"] = "application/json";
@@ -3961,7 +4677,7 @@ const proxyRoutes = [
         beforeSendBody: (xhr, body) => {
             return JSON.stringify({
                 variables: { tweet_id: xhr.storage.tweet_id, dark_request: false },
-                queryId: "VaenaVgh5q5ih7kvyVjgtg",
+                queryId: "nxpZCY2K-I6QoFHAHeojFQ",
             });
         },
     },
@@ -4148,10 +4864,36 @@ const proxyRoutes = [
             xhr.modReqHeaders["Authorization"] =
                 PUBLIC_TOKENS[0];
             delete xhr.modReqHeaders["X-Twitter-Client-Version"];
-
+        },
+        // Legacy reads the status first: a refusal is turned into the stand-in here, before that.
+        inspectResponse: (xhr) => {
+            if (xhr.storage.user_id) return;
+            let data = null;
+            try {
+                data = JSON.parse(xhr.responseText);
+            } catch (e) {
+                // not JSON: an error page, or nothing
+            }
+            if (xhr.status >= 200 && xhr.status < 300 && data?.id_str && !data.errors) return;
+            // a retired endpoint (404, 410) or a broken one (5xx); a refused session (401, 403) must
+            // still reach the login screen, and a rate limit (429) its own message
+            if (xhr.status !== 404 && xhr.status !== 410 && xhr.status < 500) return;
+            const standIn = standInLoginUser();
+            if (!standIn) return;
+            console.warn(`OldTweetDeck: X answered account verification with ${xhr.status}; using ${standIn.source}`);
+            xhr.storage.standIn = standIn.user;
+            xhr._status = 200;
+            xhr._statusText = "OK";
+            // once a day, so that a retired endpoint is noticed without nagging on every start
+            const noticedAt = Number(localStorage.OTDverifyStandInNoticedAt) || 0;
+            if (Date.now() - noticedAt > 24 * 60 * 60 * 1000) {
+                localStorage.OTDverifyStandInNoticedAt = String(Date.now());
+                toastWhenReady(`X no longer confirms your account to TweetDeck (${xhr.status}); OldTweetDeck used ${standIn.source} instead. `
+                    + "If the profile shown is wrong, open x.com in another tab, then reload TweetDeck.");
+            }
         },
         afterRequest: (xhr) => {
-            const data = JSON.parse(xhr.responseText);
+            const data = xhr.storage.standIn ?? JSON.parse(xhr.responseText);
             try {
                 if(!xhr.storage.user_id && !data.errors) {
                     localStorage.OTDverifiedUser = JSON.stringify(data);
@@ -4163,30 +4905,6 @@ const proxyRoutes = [
             }
             return data;
         },
-        // afterRequest: (xhr) => {
-        //     try {
-        //         const state = extractAssignedJSON(xhr.responseText);
-        //         const user_id = state.session.user_id;
-        //         const user = state.entities.users.entities[user_id];
-        //         if(!user) {
-        //             console.error(`User not found: ${JSON.stringify(state)}`);
-        //             if(localStorage.OTDverifiedUser) {
-        //                 try {
-        //                     verifiedUser = JSON.parse(localStorage.OTDverifiedUser);
-        //                     console.warn("Using verified user from localStorage");
-        //                     return verifiedUser;
-        //                 } catch (e) {}
-        //             }
-        //             throw new Error('User not found');
-        //         }
-        //         verifiedUser = user;
-        //         localStorage.OTDverifiedUser = JSON.stringify(user);
-        //         return user;
-        //     } catch (e) {
-        //         console.error(`Failed to get user data`, e);
-        //         return null;
-        //     }
-        // }
     },
     // DM messages
     {
@@ -4299,6 +5017,7 @@ const proxyRoutes = [
             keepLegacyPollerCache();
             relaxLegacyExhaustion();
             tuneLegacyPolling();
+            noteUnencryptedDm();
             console.log('account state', state);
 
             return state;
@@ -4550,6 +5269,7 @@ XMLHttpRequest = function () {
             if (this.proxyRoute && this.proxyRoute.beforeSendBody) {
                 body = this.proxyRoute.beforeSendBody(this, body);
             }
+            body = flattenArrayParams(this, body);
             body = applyGraphqlRegistryBody(this, body);
             if(this.proxyRoute && this.proxyRoute.sendHandler) {
                 this.proxyRoute.sendHandler(this, body);
@@ -4577,6 +5297,11 @@ XMLHttpRequest = function () {
                 xhr._failureChecked = true;
                 try {
                     graphqlRegistryOnResponse(xhr);
+                } catch (e) {
+                    console.error(e);
+                }
+                try {
+                    noteRestRetirement(xhr);
                 } catch (e) {
                     console.error(e);
                 }

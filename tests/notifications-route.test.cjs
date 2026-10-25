@@ -109,7 +109,7 @@ test('since polls re-read the top page, and that page does not move the bottom c
     route.afterRequest({ storage: { user_id: '42' }, responseText: responseText([], { bottom: 'PAGE1' }) });
     assert.equal(cursorOf(prepare('count=20&max_id=5').modUrl), 'PAGE1');
     route.afterRequest({ storage: { user_id: '42', max_id: '5' }, responseText: responseText([], { bottom: 'PAGE2' }) });
-    assert.equal(cursorOf(prepare('count=20&since_id=9').modUrl), undefined);
+    assert.equal(cursorOf(prepare('count=20&since_id=9').modUrl), 'TOP');
     route.afterRequest({ storage: { user_id: '42', since_id: '9' }, responseText: responseText([], { bottom: 'TOP_PAGE' }) });
     assert.equal(cursorOf(prepare('count=20&max_id=5').modUrl), 'PAGE2');
     assert.equal(cursorOf(prepare('count=20&max_id=5', '43').modUrl), undefined);

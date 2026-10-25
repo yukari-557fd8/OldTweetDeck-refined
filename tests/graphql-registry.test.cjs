@@ -66,13 +66,13 @@ class FakeXHR {
     abort() {}
 }
 
-function load({ localStorage = {}, fetch, solved = [] } = {}) {
+function load({ localStorage = {}, fetch, solved = [], ...globals } = {}) {
     const context = vm.createContext({
         localStorage, location: { hostname: 'x.com' }, navigator: { language: 'en-US' },
         XMLHttpRequest: FakeXHR, console: { ...console, log() {}, warn() {}, error() {} },
         URL, URLSearchParams, Date, setTimeout, clearTimeout, Event: class {}, ProgressEvent: class {},
         solveChallenge: async (path) => { solved.push(path); return 'transaction-id'; },
-        ...(fetch ? { fetch } : {}),
+        ...(fetch ? { fetch } : {}), ...globals,
     });
     context.window = context;
     vm.runInContext(source, context);
@@ -81,6 +81,8 @@ function load({ localStorage = {}, fetch, solved = [] } = {}) {
 const registry = (context) => vm.runInContext('graphqlRegistry', context);
 const settled = (context) => registry(context).pending || Promise.resolve(registry(context).table);
 const plain = (value) => JSON.parse(JSON.stringify(value));
+const builtin = (context) => vm.runInContext('builtinGraphqlTable()', context);
+const toasting = () => { const toasts = []; return { toasts, globals: { TD: { ready: true }, toasts: { showErrorNotification: (n) => toasts.push(n.message) } } }; };
 async function firstRun() {
     const localStorage = {};
     await settled(load({ localStorage, fetch: fakeFetch(pageHtml(), bundles()) }));
@@ -101,21 +103,34 @@ const HOME_FALLBACK = '/graphql/KQPfcqQJJqF6M0D77p3JKw/HomeLatestTimeline?';
 test("reads the operations x.com's bundles declare, trying the chunks a hint names until one has them", async () => {
     const localStorage = {};
     const fetch = fakeFetch(pageHtml(), bundles());
-    const table = plain(await settled(load({ localStorage, fetch })));
+    const context = load({ localStorage, fetch });
+    const table = plain(await settled(context));
     assert.equal(table.main, CDN + MAIN);
     assert.deepEqual(table.ops.HomeLatestTimeline, { id: 'AbCdEfGhIjKlMnOpQrStUv', features: HOME_FEATURES, chunk: HOME_CHUNK });
     assert.deepEqual(table.ops.NotificationsTimeline, { id: 'PV7uQNNsuQhCB2vjo4WJGA', features: HOME_FEATURES, chunk: 'bundle.Notifications' });
     assert.deepEqual(table.ops.CreateTweet, { id: 'oTolA2WNu-LVMjbarDB2KA', features: ['payments_enabled'], chunk: 'main' });
-    assert.equal(table.ops.Bookmarks, undefined);
+    // an operation this deploy did not declare keeps the built-in table's entry, newer than the route's
+    assert.equal(table.ops.Bookmarks.id, builtin(context).ops.Bookmarks.id);
+    assert.equal(table.declared, 4);
     // only the switch values the operations use are kept
     assert.deepEqual(table.values, CONFIG);
-    // the page, main.js, then for Home the chunks named HomeTimeline shortest first (one cannot be
-    // fetched), Notifications by its exact name, the guess for Bookmarks; nothing twice
+    // the page, main.js, then for Home the chunk the built-in table remembers, Notifications by its
+    // exact name, the guess for Bookmarks; nothing twice
     assert.deepEqual(fetch.log, [
+        'https://x.com/', MAIN, `${HOME_CHUNK}.d25cb356ba28eeb6a.js`, 'bundle.Notifications.436071e07774e741a.js', 'bundle.Bookmarks.0000000000000077a.js',
+    ]);
+    assert.equal(JSON.parse(localStorage.OTDgraphqlOperations).ops.HomeLatestTimeline.id, 'AbCdEfGhIjKlMnOpQrStUv');
+    // when the remembered chunk is gone, the chunks a hint names are tried shortest first (one
+    // cannot be fetched)
+    const saved = JSON.parse(localStorage.OTDgraphqlOperations);
+    saved.main = CDN + 'main.0000000000000000a.js';
+    saved.ops.HomeLatestTimeline.chunk = 'shared~bundle.Gone';
+    const again = fakeFetch(pageHtml(), bundles());
+    await settled(load({ localStorage: { OTDgraphqlOperations: JSON.stringify(saved) }, fetch: again }));
+    assert.deepEqual(again.log, [
         'https://x.com/', MAIN, 'bundle.HomeTimeline.0000000000000044a.js', 'loader.HomeTimelineAdblockNotice.0000000000000045a.js',
         `${HOME_CHUNK}.d25cb356ba28eeb6a.js`, 'bundle.Notifications.436071e07774e741a.js', 'bundle.Bookmarks.0000000000000077a.js',
     ]);
-    assert.equal(JSON.parse(localStorage.OTDgraphqlOperations).ops.HomeLatestTimeline.id, 'AbCdEfGhIjKlMnOpQrStUv');
 });
 
 test('the next start with the same main.js reads only the page, and refreshes the switch values', async () => {
@@ -203,12 +218,77 @@ test('a 404 on a known operation forces one re-read of the bundles, not one per 
     ]);
 });
 
-test('when the page cannot be read the saved table still applies, and without one nothing changes', async () => {
+test("when the page cannot be read the saved table still applies; without one, the table copied into this file does", async () => {
     const failing = async () => { throw new TypeError('Failed to fetch'); };
     const context = load({ localStorage: await firstRun(), fetch: failing });
     assert.equal(plain(await settled(context)).ops.HomeLatestTimeline.id, 'AbCdEfGhIjKlMnOpQrStUv');
     assert.equal(new URL((await send(context, 'GET', HOME)).opens.at(-1)).pathname, '/i/api/graphql/AbCdEfGhIjKlMnOpQrStUv/HomeLatestTimeline');
-    const bare = load({ fetch: failing });
-    assert.equal(await settled(bare), null);
-    assert.equal((await send(bare, 'GET', HOME)).opens.length, 1);
+    assert.equal(registry(context).hadSaved, true);
+    // a first run: the built-in table, a longer wait for the read, and a toast once legacy is up
+    const { toasts, globals } = toasting();
+    const bare = load({ fetch: failing, ...globals });
+    const table = plain(await settled(bare));
+    assert.equal(table.builtin, true);
+    assert.equal(registry(bare).hadSaved, false);
+    assert.equal(registry(bare).lastError, 'Failed to fetch');
+    assert.deepEqual(plain(vm.runInContext('GRAPHQL_STARTUP_WAIT', bare)), { within: 15000, atMost: 4000, firstRun: 10000 });
+    const url = new URL((await send(bare, 'GET', HOME)).opens.at(-1));
+    assert.equal(url.pathname, `/i/api/graphql/${table.ops.HomeLatestTimeline.id}/HomeLatestTimeline`);
+    assert.equal(table.ops.HomeLatestTimeline.features.length, 41);
+    const expected = Object.fromEntries(table.ops.HomeLatestTimeline.features.map((k) => [k, table.values[k] === true]));
+    assert.deepEqual(JSON.parse(url.searchParams.get('features')), expected);
+    assert.equal(toasts.length, 1);
+    assert.match(toasts[0], /^OldTweetDeck could not read x\.com's current API settings \(Failed to fetch\) and is using its built-in copy from \d{4}-\d{2}-\d{2}\. If columns stop loading, reload TweetDeck/);
+});
+
+test('a deploy whose bundles declare few of the operations is reported once, and the rest keep their saved entries', async () => {
+    const { toasts, globals } = toasting();
+    const main = 'main.ffffffffffffffffa.js';
+    const context = load({ localStorage: await firstRun(), fetch: fakeFetch(pageHtml({ main }), bundles(main)), ...globals });
+    const table = plain(await settled(context));
+    assert.equal(table.declared, 4);
+    assert.equal(table.ops.Bookmarks.id, builtin(context).ops.Bookmarks.id);
+    assert.equal(registry(context).lastError, "only 4 of 24 operations were found in x.com's bundles");
+    assert.deepEqual(toasts, [
+        "OldTweetDeck could not read x.com's current API settings (only 4 of 24 operations were found in x.com's bundles) and is using the copy it saved earlier. "
+        + 'If columns stop loading, reload TweetDeck; if that does not help, OldTweetDeck needs an update.',
+    ]);
+    // the same main.js again: only the page is read, nothing is declared anew, nothing more is said
+    const again = load({ localStorage: { OTDgraphqlOperations: JSON.stringify(table) }, fetch: fakeFetch(pageHtml({ main }), bundles(main)), ...globals });
+    assert.equal(plain(await settled(again)).declared, undefined);
+    assert.equal(registry(again).lastError, null);
+});
+
+test('a saved table from before this file knew an operation gets the built-in entry without a full read', async () => {
+    const saved = JSON.parse((await firstRun()).OTDgraphqlOperations);
+    delete saved.ops.CombinedLists;
+    delete saved.ops.MutedAccounts;
+    const fetch = fakeFetch(pageHtml(), bundles());
+    const context = load({ localStorage: { OTDgraphqlOperations: JSON.stringify(saved) }, fetch });
+    const table = plain(await settled(context));
+    assert.deepEqual(fetch.log, ['https://x.com/']);
+    assert.equal(table.ops.CombinedLists.id, builtin(context).ops.CombinedLists.id);
+    assert.equal(table.ops.MutedAccounts.id, builtin(context).ops.MutedAccounts.id);
+    assert.equal(table.ops.HomeLatestTimeline.id, 'AbCdEfGhIjKlMnOpQrStUv', 'what was read stays');
+    assert.equal(JSON.parse(context.localStorage.OTDgraphqlOperations).ops.CombinedLists.id, builtin(context).ops.CombinedLists.id);
+});
+
+test("the built-in table names every operation the routes use, with x.com's shared feature keys", () => {
+    const context = load();
+    const table = builtin(context);
+    assert.match(table.main, /^https:\/\/abs\.twimg\.com\/responsive-web\/client-web\/main\.\w+\.js$/);
+    assert.deepEqual(Object.keys(table.ops).sort(), Object.keys(vm.runInContext('GRAPHQL_OPERATIONS', context)).sort());
+    for (const [name, op] of Object.entries(table.ops)) {
+        assert.match(op.id, /^[\w-]{22}$/, name);
+        assert.ok(Array.isArray(op.features), name);
+        for (const key of op.features) assert.equal(typeof table.values[key], 'boolean', `${name}: ${key}`);
+    }
+    assert.notEqual(table.ops.HomeLatestTimeline.features, builtin(context).ops.HomeLatestTimeline.features, 'each table gets its own arrays');
+    // the routes' own ids are the same deploy's, so "off" and the built-in table agree
+    const source = fs.readFileSync('src/interception.js', 'utf8');
+    for (const [name, op] of Object.entries(table.ops)) {
+        const used = [...source.matchAll(new RegExp(`(?:/i/api/graphql/|\\$\\{NEW_API\\}/)([\\w-]{22})/${name}\\b`, 'g'))].map((m) => m[1]);
+        assert.ok(used.length || ['UsersByRestIds', 'ListAddMember', 'ListRemoveMember', 'CombinedLists', 'BlockedAccountsAll', 'MutedAccounts', 'ConversationControlChange'].includes(name), `${name} has a route`);
+        for (const id of used) assert.equal(id, op.id, `${name} in a route`);
+    }
 });
