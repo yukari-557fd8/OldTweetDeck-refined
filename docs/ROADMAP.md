@@ -454,12 +454,36 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 - テスト: `tests/spec-followups.test.cjs` に 5 件(help/configuration の emulate、BTD のルートと署名、記事カードと RT、スペースのカード、通知の cursor-top と 10 分の再同期とスイッチ)。`tests/notifications-graphql.test.cjs`、`tests/notifications-route.test.cjs`、`tests/mentions-route.test.cjs` の since poll の期待値を cursor-top に更新。`node --test tests/*.test.cjs` は 138 件通過。
 - 実機(2026-10-25、Edge): 再読込後、`help/configuration.json` の要求は出ず 410 も消えた。通知は初回 11.3 KB(全ページ)、以後 7 秒ごとに 698 バイト(cursor-top)。`topFetches` を 11 分前に書き換えると次の 1 回だけ全ページ(11.3 KB)になり、その後 cursor-top に戻った。ブロック 18 / ミュート 23、カラム 3 本は従来どおり。
 
-### 10-d. 残課題
+### 10-h. 詳細ビュー: `/2/timeline/conversation/{id}.json` の `TweetDetail` からの組み立て(2026-10-25)
 
-- 10-b の代替経路が X の実際の拒否で動くことは未確認(X はまだ 200 を返す)。応答を差し替えて試すか、死んだときに確認する。
-- 初回起動の 10 秒待ちは実機未確認。`localStorage.OTDgraphqlOperations` を消して起動すれば試せる。
-- 監査の B 群は 2026-10-25 に Edge の実セッションで、legacy 自身の経路(`TD.net.ajax.upload`、`TwitterClient.createList / updateList / destroyList`、`makeTwitterCall`)を呼んで確認した。画像アップロードは `upload.x.com/1.1/media/upload.json` の INIT 202 / APPEND 204 / FINALIZE 201 で media_id が返る(SRU の分割アップロード経路)。リストは create / update / destroy とも 200(非公開のテスト用リストを作って消した)。Trends カラムは `trends/available.json` と `trends/plus.json` で 200、`trends/place.json` は legacy のバンドルが呼んでいない。DM 送信 `dm/new.json` は legacy の送り方のまま(`recipient_ids[]=<id>`、jQuery の配列エンコード)では 400(code 214 "Bad request")。同じ要求で `recipient_ids=<id>` と文字列にすると 200(entries と users が返る)。x.com 本体が使う `dm/new2.json` + JSON ボディは `recipient_ids` を配列にすると 400("recipient_ids: '' is not a valid String")で、こちらも文字列を要求する。対応は 10-e。
-- C 群(退役に備える REST)、D 群(`help/configuration` の emulate、BTD の `api.x.com/graphql/` パス、通知ポーリングの cursor-top 化、`article` / `audiospace` のカード)は未着手。実機で Home の GraphQL が同じ cursor で数秒おきに 2〜3 回ずつ出ていた(通知 1 回に Home 2 回の比率)。取得間隔の見直し候補。
+- legacy の `TwitterClient.getConversation` が読むのは、`globalObjects.tweets` / `users` と、最初の instruction のエントリのうち `tweet-<id>`(祖先と本人。displayType は Tweet か SelfThread)、`conversationThread-<id>`(返信とそのスレッドの `conversationComponents`、`showMoreCursor` の actionText)、`cursor-top-` だけ。cursor を辿る要求は無い(返信を開くと返信を起点に取り直す)。REST は 2026-10-25 時点で 200 だが、小さい会話では `timelineModule` 形式(OTD の既存の掃除で `conversationThread` に直している)、大きい会話では `conversationThread` 形式で返ってくる。
+- `TweetDetail`(x.com 本体の詳細ページ)は同じものを `tweet-<id>` アイテム、`conversationthread-<id>` モジュール(`TimelineTweet` のアイテム。"show more" は `TimelineTimelineCursor` のアイテム)、cursor エントリで持つ。`conversationFromTweetDetail` がこれを legacy の形に組み立てる(`parseTweet` で v1.1 のツイートにし、著者を `users` に入れ、ミュート・ブロック中の著者の返信は REST の掃除と同じく落とす。引用先と RT 先もプールに入れる)。
+- 切り替えは 10-f と同じ: REST が答えるうちは REST、404 / 410 を `OTDretiredRest`(鍵は `/2/timeline/conversation/{id}.json` で 1 つ)に 1 日覚えて `TweetDetail` へ、`OTDpreferGraphql = "1"` で先に `TweetDetail`。
+- テスト: `tests/retired-rest.test.cjs` に 2 件(祖先の SelfThread・本人・2 本のスレッド・show more・ミュート著者の除外・終端、REST 素通しの URL 掃除と 410 の記憶が別の会話にも効くこと)。`node --test tests/*.test.cjs` は 140 件通過。
+- 実機(2026-10-25、Edge): 同じツイートの詳細ビューを REST で開くと 4 項目(返信 2)、`OTDpreferGraphql = "1"` で再読込して開くと 5 項目(返信 3、`TweetDetail` 1 回、REST の要求なし、console に警告なし)。差の 1 件はその間に増えた返信とみられる。確認後にフラグは外した。
+
+### 10-d. 残課題(2026-10-25 時点の整理。他 Phase の残りもここにまとめる)
+
+実機で確認すれば閉じられるもの(ユーザー操作が要る):
+
+- 10-e の DM 送信を OTD の書き換え経由で確認する(配列形式のスニペット、または DM カラムから 1 通)。`recipient_ids` を文字列で送った 200 までは確認済み。
+- 10-g の BTD の返信制限: BTD で返信制限付きの投稿をして、ネットワークの `ConversationControlChange` が 200 になるか。
+- 10-g の記事カードとスペースのカード: 該当する投稿がタイムラインに来たときの表示。
+- 10-a の初回起動の 10 秒待ち: `localStorage.OTDgraphqlOperations` を消して起動する。
+- 10-b の verify_credentials の代替経路: X が拒否するまで発火しない。応答を差し替えて試すか、死んだときに確認する。
+- Phase 6 の目視: 通知カラムと Mentions カラムに同じ通知が同時に出ること、ブックマーク、フォローのまとめ通知(6-d)。GraphQL の `generic_*` 系と引用通知の実データの形(6-e)。
+- Phase 9 の `OTDgraphqlRegistry = "off"` の実機確認。廃止 ID への X の応答の形は、ID が現行に揃った今は再現機会待ち。
+
+実装が残っているもの(影響の大きい順):
+
+1. ~~詳細ビュー `/2/timeline/conversation/{id}.json` の `TweetDetail` への移行~~ → 10-h で対応(REST 優先、退役時に `TweetDetail`)。
+2. `friendships/show.json` の emulate(BTD の相互フォローバッジ)。BTD は表示中の投稿者ごとに呼び、起動直後だけで約 30 回。OTD が GraphQL のユーザー状態(`following` / `followed_by`)を持っているので、そこから `relationship` を返せる。退役への備えと起動時の REST 削減を兼ねる。
+3. Phase 8-c: 「users I follow」(`FROM_FOLLOWING`)フィルタを `following` を見るクライアント側フィルタに置き換える。`followedBy` がアプリ内のフォロー・解除で更新されない点も。
+4. Phase 7: Re-draft で長文の後半が消える(`OTDenableAutoExpand` が `"1"` でないと省略のまま)。BTD が起動しないことがある(document_idle の差し込みが OTD の文書差し替えで消える、コードからの推定)。
+5. 写した表 `GRAPHQL_BUILTIN` の定期更新。console に `the built-in GraphQL table (日付) is behind x.com for …` が出たら、`copy(localStorage.OTDgraphqlOperations)` を保存して `node tools/graphql-builtin.mjs <file>` の出力で置き換える。
+6. 軽微: `friendships/no_retweets/ids.json` は GraphQL に相当が無く失敗しても空リスト(放置)。x.com 本体が付ける `x-twitter-polling` / `x-web-auth-multi-user-id` ヘッダと Home の POST 化は実害なし(対応不要)。レジストリの `UsersByRestIds` はどのルートも使っていない(整理対象)。Phase 5 の #321(macOS Firefox の絵文字フォーカス)は再現できず低優先。
+
+upstream への PR は「進め方」のとおり(#554、#552、Phase 1、起動ハングは #562 のクレジット付き再提出)。
 
 ---
 
@@ -479,5 +503,5 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 
 - Phase ごとに PR を分け、`tests/` に `node:test` のケースを足す。実行は `node --test tests/*.test.cjs`。
 - Phase 1 から Phase 5 までの実機確認は 2026-10-17 に問題なし。Phase 6 は 2026-10-18 に取得間隔だけ確認し、目視とブックマーク、フォローのまとめ通知(6-d)の確認が残っている。Phase 7 は 2026-10-18 に確認済み。Phase 8 は 2026-10-19 に確認済み。Phase 9 は 2026-10-24 に確認済み。Phase 10 は 2026-10-25 に確認済み(verify_credentials の代替経路は X が拒否するまで実機では発火しない)。
-- 残りは upstream への PR、Phase 5 で未対応の #321、Phase 7 の残課題(長文の Re-draft、返信制限の確認)、Phase 8 の残課題(「users I follow」のクライアント側への置き換え)、Phase 9 の残課題(廃止 ID への応答の形、`off` の実機確認)、Phase 10 の残課題(代替経路の実発火、初回起動の待ち、BTD の返信制限と記事・スペースのカードの実機確認、`friendships/show` の emulate、詳細ビューの TweetDetail 移行)。Phase 6 の残課題だった Home のクエリ ID は Phase 9 で自動追従になり、Phase 9 の退路は Phase 10 でファイルに写した表になった。
+- 残りは upstream への PR、Phase 5 で未対応の #321、Phase 7 の残課題(長文の Re-draft、返信制限の確認)、Phase 8 の残課題(「users I follow」のクライアント側への置き換え)、Phase 9 の残課題(廃止 ID への応答の形、`off` の実機確認)、Phase 10 の残課題(代替経路の実発火、初回起動の待ち、BTD の返信制限と記事・スペースのカードの実機確認、`friendships/show` の emulate。詳細ビューは 10-h で `TweetDetail` の代替を用意した)。Phase 6 の残課題だった Home のクエリ ID は Phase 9 で自動追従になり、Phase 9 の退路は Phase 10 でファイルに写した表になった。
 - upstream へは #554(RTL)、#552(Mentions)、Phase 1(92f0be5 / bfcbdd3)の順で PR を出す。起動ハングの修正は limex 氏の #562 が未マージで close されているので、出すならクレジット付きで出し直す。

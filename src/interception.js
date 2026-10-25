@@ -808,14 +808,21 @@ const RETIRED_REST_ANSWERS = {
     "/1.1/users/contributees.json": "an empty list",
     "/1.1/users/contributees/pending.json": "an empty list",
     "/1.1/saved_searches/list.json": "an empty list",
+    "/2/timeline/conversation/{id}.json": "TweetDetail",
 };
 
+// The key a path is remembered under: the one entry for every conversation.
+function retirementKey(path) {
+    return String(path || "").replace(/^\/2\/timeline\/conversation\/\d+\.json$/, "/2/timeline/conversation/{id}.json");
+}
+
 function retiredRestEntry(path) {
-    const entry = (readStoredJSON(RETIRED_REST_KEY) || {})[path];
+    const entry = (readStoredJSON(RETIRED_REST_KEY) || {})[retirementKey(path)];
     return entry && Date.now() - (entry.at || 0) < RETIRED_REST_RETRY ? entry : null;
 }
 
 function rememberRetiredRest(path, status) {
+    path = retirementKey(path);
     const all = readStoredJSON(RETIRED_REST_KEY) || {};
     all[path] = { status, at: Date.now() };
     try {
@@ -835,7 +842,7 @@ function noteRestRetirement(xhr) {
     const status = xhr._status || xhr.status;
     if (status !== 404 && status !== 410) return;
     if (xhr.storage?.graphql || xhr.storage?.emptyAnswer) return;
-    const path = requestPath(xhr);
+    const path = retirementKey(requestPath(xhr));
     if (!(path in RETIRED_REST_ANSWERS)) return;
     rememberRetiredRest(path, status);
 }
@@ -1030,6 +1037,97 @@ const HELP_CONFIGURATION = {
     short_url_length_https: 23,
     transformedURLLength: 23,
 };
+
+// /2/timeline/conversation/<id>.json is the detail view: legacy's TwitterClient.getConversation
+// reads globalObjects.tweets / users and the entries of the first instruction, which are tweet-<id>
+// items (the ancestors and the tweet itself, displayType Tweet or SelfThread),
+// conversationThread-<id> items (a reply and its thread as conversationComponents, and a
+// showMoreCursor whose actionText it shows) and cursor-top-. It never follows a cursor: a reply
+// opens its own conversation. x.com reads TweetDetail instead, whose page has the same things as
+// tweet-<id> items, conversationthread-<id> modules of TimelineTweet items with a
+// TimelineTimelineCursor item for "show more", and cursor entries. Shapes from 2026-10-25.
+const TWEET_DETAIL_FIELD_TOGGLES = { withArticleRichContentState: true, withArticlePlainText: false, withGrokAnalyze: false, withDisallowedReplyControls: false };
+
+function conversationFromTweetDetail(data, focalId) {
+    const tweets = {};
+    const users = {};
+    const entries = [];
+    const keep = (tweet) => {
+        if (!tweet?.id_str || !tweet.user?.id_str) return;
+        tweets[tweet.id_str] = tweet;
+        users[tweet.user.id_str] = tweet.user;
+    };
+    // a tweet the entries can point at, or nothing for a muted or blocked author (as the REST
+    // route drops them) and for what parseTweet cannot read
+    const tweetOf = (itemContent) => {
+        const result = itemContent?.tweet_results?.result;
+        const tweet = result ? safeParseTweet(result) : null;
+        if (!tweet?.id_str || !tweet.user?.id_str || userHidden(tweet.user)) return null;
+        keep(tweet);
+        for (const nested of [tweet.retweeted_status, tweet.quoted_status]) if (nested && !userHidden(nested.user)) keep(nested);
+        return { id: tweet.id_str, displayType: itemContent.tweetDisplayType === "SelfThread" ? "SelfThread" : "Tweet" };
+    };
+    const isCursor = (itemContent) => itemContent?.itemType === "TimelineTimelineCursor" || (itemContent?.cursorType && !itemContent.tweet_results);
+    for (const entry of graphqlEntries(data)) {
+        const content = entry?.content;
+        if (!content) continue;
+        const sortIndex = String(entry.sortIndex || "");
+        if (Array.isArray(content.items)) {
+            const conversationComponents = [];
+            let showMoreCursor;
+            for (const item of content.items) {
+                const itemContent = item?.item?.itemContent;
+                if (!itemContent) continue;
+                if (isCursor(itemContent)) {
+                    showMoreCursor = { value: itemContent.value, cursorType: itemContent.cursorType, displayTreatment: { actionText: itemContent.displayTreatment?.actionText || "Show more replies" } };
+                    continue;
+                }
+                const tweet = tweetOf(itemContent);
+                if (tweet) conversationComponents.push({ conversationTweetComponent: { tweet } });
+            }
+            if (!conversationComponents.length) continue;
+            const conversationThread = { conversationComponents };
+            if (showMoreCursor) conversationThread.showMoreCursor = showMoreCursor;
+            entries.push({ entryId: `conversationThread-${conversationComponents[0].conversationTweetComponent.tweet.id}`, sortIndex, content: { item: { content: { conversationThread } } } });
+            continue;
+        }
+        const itemContent = content.itemContent || (content.cursorType ? content : null);
+        if (!itemContent) continue;
+        if (isCursor(itemContent)) {
+            // legacy knows the top cursor (older ancestors exist); the bottom and "show more
+            // threads" cursors have no counterpart
+            if (itemContent.cursorType === "Top") entries.push({ entryId: `cursor-top-${sortIndex}`, sortIndex, content: { operation: { cursor: { value: itemContent.value, cursorType: "Top" } } } });
+            continue;
+        }
+        const tweet = tweetOf(itemContent);
+        if (tweet) entries.push({ entryId: `tweet-${tweet.id}`, sortIndex, content: { item: { content: { tweet } } } });
+    }
+    return {
+        globalObjects: { tweets, users, moments: {}, cards: {}, places: {}, media: {}, broadcasts: {}, topics: {}, lists: {} },
+        timeline: {
+            id: `Conversation-${focalId}`,
+            instructions: [{ addEntries: { entries } }, { terminateTimeline: { direction: "Top" } }],
+            responseObjects: { feedbackActions: {}, immediateReactions: {} },
+        },
+    };
+}
+
+async function answerConversationFromGraph(xhr, focalId) {
+    try {
+        const variables = {
+            focalTweetId: focalId, with_rux_injections: false, rankingMode: "Relevance", includePromotedContent: false,
+            withCommunity: true, withQuickPromoteEligibilityTweetFields: true, withBirdwatchNotes: true, withVoice: true,
+        };
+        const { status, data } = await graphqlGet("TweetDetail", variables, TWEET_DETAIL_FIELD_TOGGLES);
+        const failure = graphqlPageFailure(status, data);
+        if (failure) throw failure;
+        xhr._responseText = JSON.stringify(conversationFromTweetDetail(data, focalId));
+    } catch (e) {
+        answerWithError(xhr, "could not read the conversation from TweetDetail", e);
+        return;
+    }
+    emulateResponse(xhr);
+}
 
 // A route that lets REST through while it answers, and takes the GraphQL source otherwise.
 function restOrGraphqlRoute(path, answer) {
@@ -4685,8 +4783,20 @@ const proxyRoutes = [
     {
         path: /\/2\/timeline\/conversation\/(\d+).json/,
         method: "GET",
+        // REST while it answers (see "v1.1 endpoints x.com itself no longer calls"); TweetDetail,
+        // which x.com reads, once a 404 / 410 is remembered or with OTDpreferGraphql.
+        openHandler: deferOpen,
+        beforeSend: (xhr) => {
+            xhr.storage.graphql = useGraphqlFor("/2/timeline/conversation/{id}.json");
+            if (!xhr.storage.graphql) openDeferred(xhr);
+        },
+        sendHandler: (xhr, body) => {
+            if (xhr.storage.graphql) answerConversationFromGraph(xhr, xhr.storage.tweet_id);
+            else xhr.send(body);
+        },
         beforeRequest: (xhr) => {
             let originalUrl = new URL(xhr.originalUrl);
+            xhr.storage.tweet_id = originalUrl.pathname.match(/\/2\/timeline\/conversation\/(\d+)\.json/)?.[1];
             let params = new URLSearchParams(originalUrl.search);
 
             params.delete("ext");

@@ -173,6 +173,77 @@ test('users/contributees and saved_searches/list answer an empty list once X ref
     assert.deepEqual(await pending.done, { status: 200, text: '[{"user":{"id_str":"7"}}]' });
 });
 
+// TweetDetail as x.com received it on 2026-10-25: tweet-<id> items (an ancestor in a self thread,
+// then the tweet), conversationthread-<id> modules of TimelineTweet items, a cursor item for "show
+// more" inside one module, and the bottom cursor.
+const gTweet = (id, author, extra = {}) => ({
+    __typename: 'Tweet', rest_id: id, core: { user_results: { result: author } },
+    legacy: { id_str: id, conversation_id_str: '100', full_text: 'tweet ' + id, user_id_str: author.rest_id, created_at: 'Wed Oct 14 10:00:00 +0000 2026', entities: {}, ...extra },
+});
+const tweetItem = (id, author, display = 'Tweet', extra = {}) => ({ itemType: 'TimelineTweet', __typename: 'TimelineTweet', tweet_results: { result: gTweet(id, author, extra) }, tweetDisplayType: display });
+const threadModule = (items) => ({ entryId: 'conversationthread-' + items[0].entryId.split('-').pop(), sortIndex: '50', content: { entryType: 'TimelineTimelineModule', items, displayType: 'VerticalConversation' } });
+const moduleTweet = (id, author, display = 'Tweet', extra = {}) => ({ entryId: 'conversationthread-x-tweet-' + id, item: { itemContent: tweetItem(id, author, display, extra) } });
+const showMore = (value) => ({ entryId: 'conversationthread-x-cursor-showmore-1', item: { itemContent: { itemType: 'TimelineTimelineCursor', cursorType: 'ShowMore', value, displayTreatment: { actionText: 'Show replies' } } } });
+const tweetDetail = () => ({ data: { threaded_conversation_with_injections_v2: { instructions: [
+    { type: 'TimelineClearCache' },
+    { type: 'TimelineAddEntries', entries: [
+        { entryId: 'tweet-99', sortIndex: '90', content: { entryType: 'TimelineTimelineItem', itemContent: tweetItem('99', gUser('7'), 'SelfThread') } },
+        { entryId: 'tweet-100', sortIndex: '80', content: { entryType: 'TimelineTimelineItem', itemContent: tweetItem('100', gUser('7'), 'Tweet', { in_reply_to_status_id_str: '99' }) } },
+        threadModule([moduleTweet('201', gUser('8'), 'Tweet', { in_reply_to_status_id_str: '100' }), moduleTweet('202', gUser('8'), 'SelfThread', { in_reply_to_status_id_str: '201' })]),
+        threadModule([moduleTweet('301', gUser('9'), 'Tweet', { in_reply_to_status_id_str: '100' }), showMore('MORE-301')]),
+        threadModule([moduleTweet('401', { ...gUser('10'), relationship_perspectives: { muting: true } }, 'Tweet', { in_reply_to_status_id_str: '100' })]),
+        { entryId: 'cursor-bottom-1', sortIndex: '1', content: { entryType: 'TimelineTimelineCursor', cursorType: 'Bottom', value: 'BOTTOM' } },
+    ] },
+    { type: 'TimelineTerminateTimeline', direction: 'Top' },
+] } } });
+const CONVERSATION = 'https://api.x.com/2/timeline/conversation/100.json?include_reply_count=true&cards_platform=Web-13&ext=mediaStats&include_entities=1';
+
+test("the detail view comes from TweetDetail in legacy's conversation shape when REST is gone", async () => {
+    const detail = [/TweetDetail/, { body: (url) => { assert.equal(variablesOf(url).focalTweetId, '100'); assert.equal(url.searchParams.get('fieldToggles') !== null, true); return tweetDetail(); } }];
+    const { context, XHR } = load({ localStorage: { OTDpreferGraphql: '1' }, responders: [detail] });
+    const { xhr, done } = await legacyGet(context, CONVERSATION);
+    const answer = await done;
+    assert.equal(answer.status, 200);
+    assert.equal(xhr.url, undefined, 'the legacy request never went to X');
+    assert.equal(graphqlRequests(XHR).length, 1);
+    const body = JSON.parse(answer.text);
+    // the pool legacy hydrates: every visible tweet with its author; the muted author's reply is gone
+    assert.deepEqual(Object.keys(body.globalObjects.tweets).sort(), ['100', '201', '202', '301', '99']);
+    assert.deepEqual(Object.keys(body.globalObjects.users).sort(), ['7', '8', '9']);
+    assert.equal(body.globalObjects.tweets['100'].user_id_str, '7');
+    assert.equal(body.globalObjects.tweets['100'].in_reply_to_status_id_str, '99');
+    assert.equal(body.globalObjects.users['8'].screen_name, 'user8');
+    // the entries, in x.com's order and legacy's shapes
+    const entries = body.timeline.instructions[0].addEntries.entries;
+    assert.deepEqual(entries.map((e) => e.entryId), ['tweet-99', 'tweet-100', 'conversationThread-201', 'conversationThread-301']);
+    assert.deepEqual(entries[0].content.item.content.tweet, { id: '99', displayType: 'SelfThread' });
+    assert.deepEqual(entries[1].content.item.content.tweet, { id: '100', displayType: 'Tweet' });
+    const thread = entries[2].content.item.content.conversationThread;
+    assert.deepEqual(thread.conversationComponents.map((c) => c.conversationTweetComponent.tweet), [{ id: '201', displayType: 'Tweet' }, { id: '202', displayType: 'SelfThread' }]);
+    assert.equal(thread.showMoreCursor, undefined);
+    const withMore = entries[3].content.item.content.conversationThread;
+    assert.deepEqual(withMore.conversationComponents.map((c) => c.conversationTweetComponent.tweet.id), ['301']);
+    assert.equal(withMore.showMoreCursor.displayTreatment.actionText, 'Show replies');
+    assert.equal(withMore.showMoreCursor.value, 'MORE-301');
+    assert.deepEqual(body.timeline.instructions[1], { terminateTimeline: { direction: 'Top' } });
+    assert.equal(body.timeline.id, 'Conversation-100');
+});
+
+test('while REST answers, the conversation request goes out to it with the usual cleanup; a 410 is remembered for every conversation', async () => {
+    const localStorage = {};
+    const detail = [/TweetDetail/, { body: () => tweetDetail() }];
+    const { context, XHR } = load({ localStorage, responders: [detail] });
+    const { xhr, done } = await legacyGet(context, CONVERSATION);
+    assert.equal(xhr.url, 'https://api.x.com/2/timeline/conversation/100.json?include_reply_count=true&cards_platform=Web-13&include_entities=1');
+    xhr.respond(410, '{"errors":[{"message":"Gone"}]}');
+    assert.equal((await done).status, 410);
+    assert.equal(JSON.parse(localStorage.OTDretiredRest)['/2/timeline/conversation/{id}.json'].status, 410);
+    const other = await legacyGet(context, 'https://api.x.com/2/timeline/conversation/555.json?include_reply_count=true');
+    assert.equal(other.xhr.url, undefined);
+    assert.equal((await other.done).status, 200);
+    assert.equal(variablesOf(graphqlRequests(XHR)[0]).focalTweetId, '555');
+});
+
 test('a GraphQL source that fails answers legacy with 503 instead of an empty success', async () => {
     const failing = [/CombinedLists/, { status: 404, body: () => ({ errors: [{ message: 'operation not found' }] }) }];
     const { context } = load({ localStorage: { OTDpreferGraphql: '1' }, responders: [failing] });
