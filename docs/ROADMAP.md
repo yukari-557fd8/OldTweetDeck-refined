@@ -477,7 +477,8 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 - 10-e の DM 送信を OTD の書き換え経由で確認する(配列形式のスニペット、または DM カラムから 1 通)。`recipient_ids` を文字列で送った 200 までは確認済み。
 - 10-g の BTD の返信制限: BTD で返信制限付きの投稿をして、ネットワークの `ConversationControlChange` が 200 になるか。
 - 10-g の記事カードとスペースのカード: 該当する投稿がタイムラインに来たときの表示。
-- 10-a の初回起動の 10 秒待ち: `localStorage.OTDgraphqlOperations` を消して起動する。
+- ~~10-a の初回起動の 10 秒待ち~~ → 2026-10-25 に `OTDgraphqlOperations` を消して起動して確認。写した表の `main.js` が現行デプロイと同じだったので読み取りは HTML だけで済み(全文の読み直しは起きない設計どおり)、最初の GraphQL 要求は読み取り完了後(起動 2.4 秒)に出た。保存された表は 24 操作。別デプロイでの全文読み直しと 10 秒の上限は未確認のまま。
+- 8-c の「users I follow」: 2026-10-25 に Home カラムの設定を開き、Tweet authors の選択肢が all users / users I follow / specific user… / me… / verified users / mutual follows の順で出ることを確認。
 - 10-b の verify_credentials の代替経路: X が拒否するまで発火しない。応答を差し替えて試すか、死んだときに確認する。
 - Phase 6 の目視: 通知カラムと Mentions カラムに同じ通知が同時に出ること、ブックマーク、フォローのまとめ通知(6-d)。GraphQL の `generic_*` 系と引用通知の実データの形(6-e)。
 - Phase 9 の `OTDgraphqlRegistry = "off"` の実機確認。廃止 ID への X の応答の形は、ID が現行に揃った今は再現機会待ち。
