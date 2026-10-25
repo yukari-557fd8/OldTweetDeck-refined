@@ -499,7 +499,7 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 2. ~~`friendships/show.json` の emulate~~ → 10-i で対応(覚えた関係から答え、退役時は GraphQL で引く)。
 3. ~~Phase 8-c: 「users I follow」フィルタのクライアント側置き換え~~ → 8-c に対応を記録。
 4. ~~Phase 7: Re-draft で長文の後半が消える。BTD が起動しないことがある~~ → 7-a に対応を記録(自分の長文は常に全文、BTD の設定 script を差し替え後も残す。後者は 4.4.1 の入れ直しが必要)。
-5. 写した表 `GRAPHQL_BUILTIN` の定期更新。console に `the built-in GraphQL table (日付) is behind x.com for …` が出たら、`copy(localStorage.OTDgraphqlOperations)` を保存して `node tools/graphql-builtin.mjs <file>` の出力で置き換える。
+5. 写した表 `GRAPHQL_BUILTIN` の定期更新。console に `the built-in GraphQL table (日付) is behind x.com for …` が出たら、`copy(localStorage.OTDgraphqlOperations)` を保存して `node tools/graphql-builtin.mjs <file>` の出力で置き換える。 手順は 2026-10-25 に一度通した: 14:16 UTC に保存した表は同じデプロイ(`main.a8ff362f…`)で、24 操作の ID と鍵の一覧は写した表と一致、差は features の値 1 件(`rweb_sports_post_context_enabled` が true → false)だけで、その出力で置き換えた。
 6. 軽微: `friendships/no_retweets/ids.json` は GraphQL に相当が無く失敗しても空リスト(放置)。x.com 本体が付ける `x-twitter-polling` / `x-web-auth-multi-user-id` ヘッダと Home の POST 化は実害なし(対応不要)。レジストリの `UsersByRestIds` はどのルートも使っていない(整理対象)。Phase 5 の #321(macOS Firefox の絵文字フォーカス)は再現できず低優先。
 
 upstream への PR は「進め方」のとおり(#554、#552、Phase 1、起動ハングは #562 のクレジット付き再提出)。
