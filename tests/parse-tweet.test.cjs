@@ -124,6 +124,24 @@ test('a long tweet stays truncated unless autoexpand is on', () => {
     assert.equal(expanded.text, full);
 });
 
+test("one's own long tweets are always whole, so Better TweetDeck's Re-draft keeps all of the text", () => {
+    const full = 'word '.repeat(80).trim();
+    // the author of the fixture is user 1; the deck is logged in as 1
+    const own = loadParseTweet({ twitterAccountID: '1' })(noteTweet(full));
+    assert.equal(own.full_text, full);
+    assert.equal(own.text, full);
+    assert.equal(own.display_text_range, undefined);
+    // someone else's stays truncated
+    const other = loadParseTweet({ twitterAccountID: '2' })(noteTweet(full));
+    assert.equal(other.full_text, 'short preview … https://t.co/aaaaaaaaaa');
+    // a retweet of one's own long tweet too
+    const retweet = () => { const r = tweetResult('71', user('5', 'eve'), 'RT @alice: short preview …'); r.legacy.retweeted_status_result = { result: noteTweet(full) }; return r; };
+    const asRetweet = loadParseTweet({ twitterAccountID: '1' })(retweet());
+    assert.equal(asRetweet.retweeted_status.full_text, full);
+    const asOtherRetweet = loadParseTweet({ twitterAccountID: '2' })(retweet());
+    assert.equal(asOtherRetweet.retweeted_status.full_text, 'short preview … https://t.co/aaaaaaaaaa');
+});
+
 test('a video unified card becomes native video media', () => {
     const res = tweetResult('80', user('1', 'alice'), 'watch');
     res.card = { legacy: { name: 'unified_card', binding_values: { unified_card: { string_value: JSON.stringify({

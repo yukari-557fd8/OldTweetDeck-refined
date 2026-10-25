@@ -25,9 +25,21 @@ window.postMessage('extensionId', '*');
 window.postMessage('cookie', '*');
 window.postMessage('getotdtoken', '*');
 
+// Better TweetDeck's content script puts <script src=".../build/inject.js" data-btd-settings="…">
+// into <head> at document_idle and reads its settings back from that element. When it got there
+// before the document is replaced below, the element went with the old document and Better
+// TweetDeck started without its settings, or not at all (a reload fixed it). These elements are
+// kept and put back into the new <head>; a script element that has already run does not run again
+// when it is re-attached.
+function keepOtherExtensions(doc) {
+    return Array.from(doc.querySelectorAll('script[data-btd-settings], script[data-btd-version]'));
+}
+
 async function main() {
     let html = await fetch(chrome.runtime.getURL('/files/index.html')).then(r => r.text());
+    const kept = keepOtherExtensions(document);
     document.documentElement.innerHTML = html;
+    if (kept.length) document.head.append(...kept);
     // x.com serves <html lang="ar" dir="rtl"> for RTL account languages and innerHTML keeps
     // root attributes, so pin the deck chrome to LTR (tweet bodies carry their own lang).
     document.documentElement.setAttribute('dir', 'ltr');

@@ -546,8 +546,28 @@ function presentCard(tweet, card) {
     if (parsed) tweet.card = parsed;
 }
 
+// The accounts TweetDeck posts as: the login (verify_credentials, or the id kept from it) and,
+// once legacy is up, every account it holds (Teams). Used to tell one's own tweets apart.
+function ownAccountIds() {
+    const ids = new Set();
+    const add = (id) => { if (id) ids.add(String(id)); };
+    add(verifiedUser?.id_str);
+    add(localStorage.twitterAccountID);
+    try {
+        for (const account of TD.storage.accountController.getAll()) add(account.getUserID());
+    } catch (e) {
+        // legacy not loaded yet
+    }
+    return ids;
+}
+
 function parseTweet(res, options) {
-    const expandNotes = options?.expandNotes ?? localStorage.OTDenableAutoExpand === "1";
+    // Long tweets stay truncated unless autoexpand is on (TweetDeck adds an Expand tweet link),
+    // except one's own: Better TweetDeck's Re-draft rebuilds the composer from chirp.text and
+    // deletes the tweet at once, so a truncated own tweet would lose its second half.
+    const expandSetting = options?.expandNotes ?? localStorage.OTDenableAutoExpand === "1";
+    const own = ownAccountIds();
+    const expandNotesFor = (userId) => expandSetting || own.has(String(userId || ""));
     try {
 
         if (typeof res !== "object") return;
@@ -639,7 +659,7 @@ function parseTweet(res, options) {
             }
             // With autoexpand off, leave the truncated text. It ends in "…" and
             // TweetDeck adds an Expand tweet link. statuses/show passes expandNotes.
-            if (expandNotes && result.note_tweet && result.note_tweet.note_tweet_results) {
+            if (tweet.retweeted_status && expandNotesFor(tweet.retweeted_status.user_id_str) && result.note_tweet && result.note_tweet.note_tweet_results) {
                 let note = parseNoteTweet(result);
                 tweet.retweeted_status.full_text = note.text;
                 tweet.retweeted_status.text = note.text;
@@ -651,7 +671,7 @@ function parseTweet(res, options) {
         if (res.quoted_status_result) {
             tweet.quoted_status_result = res.quoted_status_result;
         }
-        if (expandNotes && res.note_tweet && res.note_tweet.note_tweet_results) {
+        if (expandNotesFor(tweet.user_id_str) && res.note_tweet && res.note_tweet.note_tweet_results) {
             let note = parseNoteTweet(res);
             tweet.full_text = note.text;
             tweet.text = note.text;

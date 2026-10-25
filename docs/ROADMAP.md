@@ -277,10 +277,10 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 ### 7-a. 調査結果
 
 - フォークの変更で、BTD の読み込みや TweetDeck 内部への差し込みが壊れる箇所は無い。両方が手を入れる次の箇所は両立する: x.com リンクの判定(Phase 5)と BTD の t.co 除去、取得間隔の下限(Phase 6)と BTD のカスタム時刻(30 秒周期の時刻更新タスクを止める)、`window.Notification` の差し替え(Phase 5)、各ルートの URL の組み立てと BTD が `include_entities` 付きの要求に足す ext 系の引数、postMessage。
-- 残課題(未対応):
-  - **Re-draft で長文の後半が消える**: Phase 3(31dc3bc)から、長文は `OTDenableAutoExpand` が `"1"` でない限り省略のまま。「Expand tweet」も表示だけを書き換え、chirp の `text` は省略のまま(`files/bundle.js` 55 行)。BTD の Re-draft は `chirp.text` から作成欄を作り、すぐに元の投稿を削除するので、280 字を超える自分の投稿では後半が失われる。upstream は常に全文にしていたので、フォークで起きるようになった。回避策は `localStorage.OTDenableAutoExpand = '1'`。修正案は、自分のアカウントの投稿だけ常に全文にすること。
-  - **返信制限(conversation control)が効いているか未確認**: BTD は投稿のあとに、旧形式の `POST https://api.x.com/graphql/` で ConversationControlChange(`hb1elGcj6769uT8qVYqtjw`)を送る。OTD にこれを扱うルートは無く、そのまま X に届く。失敗しても BTD は何も表示しないので、制限したつもりの投稿が全員返信可のまま公開されうる。
-  - **BTD が起動しないことがある(コードからの推定)**: BTD は document_idle に設定付きのスクリプトを `<head>` に入れる。OTD が文書を差し替える前に入ると要素ごと消え、BTD は何も出さずに起動しない(リロードで直る)。また BTD の対象は `https://x.com/i/tweetdeck` だけで、`?` 付きの URL では読み込まれない。
+- 残課題(2026-10-25 に対応。下は当時の記述):
+  - **Re-draft で長文の後半が消える**(対応済み: 自分のアカウント(ログインと、legacy が持つ全アカウント)の長文は常に全文にする。`ownAccountIds` / `parseTweet`、RT 先も同じ。`tests/parse-tweet.test.cjs` に 1 件): Phase 3(31dc3bc)から、長文は `OTDenableAutoExpand` が `"1"` でない限り省略のまま。「Expand tweet」も表示だけを書き換え、chirp の `text` は省略のまま(`files/bundle.js` 55 行)。BTD の Re-draft は `chirp.text` から作成欄を作り、すぐに元の投稿を削除するので、280 字を超える自分の投稿では後半が失われる。upstream は常に全文にしていたので、フォークで起きるようになった。回避策は `localStorage.OTDenableAutoExpand = '1'`。修正案は、自分のアカウントの投稿だけ常に全文にすること。
+  - **返信制限(conversation control)が効いているか未確認**(10-g で `x.com/i/api/graphql/<現行 ID>/` へ向け直すルートを足した。実機は未確認): BTD は投稿のあとに、旧形式の `POST https://api.x.com/graphql/` で ConversationControlChange(`hb1elGcj6769uT8qVYqtjw`)を送る。OTD にこれを扱うルートは無く、そのまま X に届く。失敗しても BTD は何も表示しないので、制限したつもりの投稿が全員返信可のまま公開されうる。
+  - **BTD が起動しないことがある(コードからの推定)**(対応済み: `src/injection.js` の `keepOtherExtensions` が `data-btd-settings` / `data-btd-version` を持つ script 要素を差し替えの前に取り分け、新しい `<head>` に戻す。実行済みの script 要素は付け直しても再実行されない。`injection.js` は拡張機能本体なので 4.4.1 として入れ直しが必要。`tests/injection.test.cjs` に 1 件): BTD は document_idle に設定付きのスクリプトを `<head>` に入れる。OTD が文書を差し替える前に入ると要素ごと消え、BTD は何も出さずに起動しない(リロードで直る)。また BTD の対象は `https://x.com/i/tweetdeck` だけで、`?` 付きの URL では読み込まれない。
   - BTD の Advanced Mute Engine のフィルタは TweetDeck の設定に入るので、Phase 4 以降はキーワードミュートと同じくログインアカウントごとに保存される。
 
 ### 7-b. 相互フォローバッジが通知と Mentions にしか出ない
@@ -487,7 +487,7 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 1. ~~詳細ビュー `/2/timeline/conversation/{id}.json` の `TweetDetail` への移行~~ → 10-h で対応(REST 優先、退役時に `TweetDetail`)。
 2. ~~`friendships/show.json` の emulate~~ → 10-i で対応(覚えた関係から答え、退役時は GraphQL で引く)。
 3. Phase 8-c: 「users I follow」(`FROM_FOLLOWING`)フィルタを `following` を見るクライアント側フィルタに置き換える。`followedBy` がアプリ内のフォロー・解除で更新されない点も。
-4. Phase 7: Re-draft で長文の後半が消える(`OTDenableAutoExpand` が `"1"` でないと省略のまま)。BTD が起動しないことがある(document_idle の差し込みが OTD の文書差し替えで消える、コードからの推定)。
+4. ~~Phase 7: Re-draft で長文の後半が消える。BTD が起動しないことがある~~ → 7-a に対応を記録(自分の長文は常に全文、BTD の設定 script を差し替え後も残す。後者は 4.4.1 の入れ直しが必要)。
 5. 写した表 `GRAPHQL_BUILTIN` の定期更新。console に `the built-in GraphQL table (日付) is behind x.com for …` が出たら、`copy(localStorage.OTDgraphqlOperations)` を保存して `node tools/graphql-builtin.mjs <file>` の出力で置き換える。
 6. 軽微: `friendships/no_retweets/ids.json` は GraphQL に相当が無く失敗しても空リスト(放置)。x.com 本体が付ける `x-twitter-polling` / `x-web-auth-multi-user-id` ヘッダと Home の POST 化は実害なし(対応不要)。レジストリの `UsersByRestIds` はどのルートも使っていない(整理対象)。Phase 5 の #321(macOS Firefox の絵文字フォーカス)は再現できず低優先。
 
@@ -511,5 +511,5 @@ upstream への PR は「進め方」のとおり(#554、#552、Phase 1、起動
 
 - Phase ごとに PR を分け、`tests/` に `node:test` のケースを足す。実行は `node --test tests/*.test.cjs`。
 - Phase 1 から Phase 5 までの実機確認は 2026-10-17 に問題なし。Phase 6 は 2026-10-18 に取得間隔だけ確認し、目視とブックマーク、フォローのまとめ通知(6-d)の確認が残っている。Phase 7 は 2026-10-18 に確認済み。Phase 8 は 2026-10-19 に確認済み。Phase 9 は 2026-10-24 に確認済み。Phase 10 は 2026-10-25 に確認済み(verify_credentials の代替経路は X が拒否するまで実機では発火しない)。
-- 残りは upstream への PR、Phase 5 で未対応の #321、Phase 7 の残課題(長文の Re-draft、返信制限の確認)、Phase 8 の残課題(「users I follow」のクライアント側への置き換え)、Phase 9 の残課題(廃止 ID への応答の形、`off` の実機確認)、Phase 10 の残課題(代替経路の実発火、初回起動の待ち、BTD の返信制限と記事・スペースのカードの実機確認。詳細ビューは 10-h、`friendships/show` は 10-i で代替を用意した)。Phase 6 の残課題だった Home のクエリ ID は Phase 9 で自動追従になり、Phase 9 の退路は Phase 10 でファイルに写した表になった。
+- 残りは upstream への PR、Phase 5 で未対応の #321、Phase 7 の残課題(返信制限の実機確認のみ。長文の Re-draft と BTD の起動は 2026-10-25 に対応)、Phase 8 の残課題(「users I follow」のクライアント側への置き換え)、Phase 9 の残課題(廃止 ID への応答の形、`off` の実機確認)、Phase 10 の残課題(代替経路の実発火、初回起動の待ち、BTD の返信制限と記事・スペースのカードの実機確認。詳細ビューは 10-h、`friendships/show` は 10-i で代替を用意した)。Phase 6 の残課題だった Home のクエリ ID は Phase 9 で自動追従になり、Phase 9 の退路は Phase 10 でファイルに写した表になった。
 - upstream へは #554(RTL)、#552(Mentions)、Phase 1(92f0be5 / bfcbdd3)の順で PR を出す。起動ハングの修正は limex 氏の #562 が未マージで close されているので、出すならクレジット付きで出し直す。
