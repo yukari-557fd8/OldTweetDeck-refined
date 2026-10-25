@@ -477,7 +477,7 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 - 即時表示(`showOwnTweetInHome`): `statuses/update.json` ルートが CreateTweet の応答を `parseTweet` で変換したあと、投稿者アカウント(`tweet.user.id_str`。Teams の act-as でもその口座)の Home フィードの poller(`feedPollers(user_id, "home")`。通知の `notificationPollers` を一般化)に、legacy 自身の変換(`TD.controller.clients.getClient("twitter:<id>").processTweet`)で作った chirp を `acceptContentedChirps` で渡す。これは legacy が要求の外から届く chirp を受け取る入口で、Home では素通し(`usertweets` / `search` だけ条件付き)。数秒後の新着取得で X が返した同じ投稿は従来どおり legacy に渡り、legacy が ID で差し替える(重なりのある取得と同じ)。渡した ID は Home ルートと同じく `rememberHomeTweet` で既読にし、あとで会話モジュールに入って戻ってきても既存の投稿と同じ扱いで落とす。初回ページを待っている poller(`isInitialLoad`)、返信(Home が返信を載せるかは X の判断なので polling に任せる)、TD が無い・内部が変わったときは何もせず、従来どおり polling で届く。`responseText` は複数回読まれることがあるので変換と表示は `xhr.storage.tweet` で 1 回だけ。差し込んだ ID は最新のページに加え(`fileWithLatestPage`)、そこから下へスクロールしても bottom cursor が見つかる。
 - cursor の選び方(`rememberTopCursor` / `latestTopCursor`): X の Top cursor は thrift の構造体で、応答時刻の snowflake と「そのタイムラインの最新エントリの ID」を持つ(HAR で復号)。x.com 本体は毎回「直前の応答の Top cursor」で問い合わせ、X はその最新 ID より新しいものを返す。x.com.har(10-23)と 10-24 の HAR には、要求 cursor の時刻より古い ID の投稿が返っている例があり(14:56:34.4 の cursor に 14:56:33.2 の投稿、14:09:05.9 の cursor に 14:09:03.8 の投稿)、境界は時刻ではなく最新 ID だと分かる。legacy の since_id は 2 番目に新しい chirp(`calculateLowerBound` の添字 1)なので、その chirp を含むページの Top cursor を使う従来の方式では、新しい投稿が 1 件入るたびに次の 1 件が来るまで毎回その投稿を取り直していた(約 1 KB が約 4 KB)。Home / List / User の各ルートで、先頭取得と新着取得の応答(0 件でも)が運んだ Top cursor をフィードごとに覚え、新着取得はそれを使う。max_id のスクロールのページは対象外。10 分ごとの全文再同期(`TOP_RESYNC_INTERVAL`)と、ページごとの bottom cursor の記録は従来どおり。ページ記録の `top` は読む側が無くなったので外した。
 - テスト: `tests/home-scroll.test.cjs` に 3 件(最新の Top cursor を使うこと・0 件の応答でも進むこと・スクロールのページは数えないこと。投稿の即時表示と 1 回だけの変換、新着取得での再送は legacy に渡し会話モジュールでの再送は落とすこと、bottom cursor。返信・別アカウント・初回ページ待ち・TD 無しでは polling に任せること)。既存 2 件の期待値を更新。`node --test tests/*.test.cjs` は 153 件通過。
-- 実機確認: 2026-10-25 に d79cd19 で投稿し、Home に即時に出ることを確認。数秒後の新着取得で二重に出ないこと、新着取得が直前の応答の Top cursor で出て 1 回約 1 KB に戻ることは HAR では未確認(テストでは確認済み)。
+- 実機確認: 2026-10-25 に d79cd19 で投稿し、Home に即時に出ること、数秒後の新着取得のあとも二重に出ないことを確認。新着取得が直前の応答の Top cursor で出て 1 回約 1 KB に戻ることは HAR では未確認(テストでは確認済み)。
 
 ### 10-d. 残課題(2026-10-25 時点の整理。他 Phase の残りもここにまとめる)
 
@@ -488,7 +488,7 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 - ~~10-g の記事カードとスペースのカード~~ → 2026-10-25 にユーザーが記事とスペースを作って確認。Home カラムで、記事の投稿には題名と x.com のリンクカード(`https://x.com/i/article/<id>` へのリンク 3 か所、カバー画像の無い記事なので `summary`)、スペースの投稿には「X Space / x.com」のカード(リンクは投稿の t.co 経由でスペースへ)が legacy のカード描画(`hw-card-container`)で出た。カバー画像(2560×1024)を付けた記事は `summary_large_image` になり、カードの上に画像(pbs の 1200×480 版)、下に題名と x.com が出た。
 - ~~10-a の初回起動の 10 秒待ち~~ → 2026-10-25 に `OTDgraphqlOperations` を消して起動して確認。写した表の `main.js` が現行デプロイと同じだったので読み取りは HTML だけで済み(全文の読み直しは起きない設計どおり)、最初の GraphQL 要求は読み取り完了後(起動 2.4 秒)に出た。保存された表は 24 操作。別デプロイでの全文読み直しと 10 秒の上限は未確認のまま。
 - 8-c の「users I follow」: 2026-10-25 に Home カラムの設定を開き、Tweet authors の選択肢が all users / users I follow / specific user… / me… / verified users / mutual follows の順で出ることを確認。
-- ~~10-j の即時表示~~ → 2026-10-25 に確認。残りは HAR で見るもの: 数秒後の新着取得で二重に出ないこと、新着取得が直前の応答の Top cursor で出て 1 回約 1 KB に戻ること。
+- ~~10-j の即時表示と、新着取得のあとも二重に出ないこと~~ → 2026-10-25 に確認。残りは HAR で見るもの: 新着取得が直前の応答の Top cursor で出て 1 回約 1 KB に戻ること。
 - 10-b の verify_credentials の代替経路: X が拒否するまで発火しない。応答を差し替えて試すか、死んだときに確認する。
 - Phase 6 の目視: 通知カラムと Mentions カラムに同じ通知が同時に出ること、ブックマーク、フォローのまとめ通知(6-d)。GraphQL の `generic_*` 系と引用通知の実データの形(6-e)。
 - Phase 9 の `OTDgraphqlRegistry = "off"` の実機確認。廃止 ID への X の応答の形は、ID が現行に揃った今は再現機会待ち。
@@ -522,5 +522,5 @@ upstream への PR は「進め方」のとおり(#554、#552、Phase 1、起動
 
 - Phase ごとに PR を分け、`tests/` に `node:test` のケースを足す。実行は `node --test tests/*.test.cjs`。
 - Phase 1 から Phase 5 までの実機確認は 2026-10-17 に問題なし。Phase 6 は 2026-10-18 に取得間隔だけ確認し、目視とブックマーク、フォローのまとめ通知(6-d)の確認が残っている。Phase 7 は 2026-10-18 に確認済み。Phase 8 は 2026-10-19 に確認済み。Phase 9 は 2026-10-24 に確認済み。Phase 10 は 2026-10-25 に確認済み(verify_credentials の代替経路は X が拒否するまで実機では発火しない)。
-- 残りは upstream への PR、Phase 5 で未対応の #321、Phase 7 の残課題(返信制限の実機確認のみ。長文の Re-draft と BTD の起動は 2026-10-25 に対応)、Phase 8 の残課題(2026-10-25 に対応)、Phase 9 の残課題(廃止 ID への応答の形、`off` の実機確認)、Phase 10 の残課題(代替経路の実発火、初回起動の待ち、10-j の新着取得の HAR 確認。BTD の返信制限と記事・スペースのカードと 10-j の即時表示は 2026-10-25 に確認。詳細ビューは 10-h、`friendships/show` は 10-i で代替を用意した)。Phase 6 の残課題だった Home のクエリ ID は Phase 9 で自動追従になり、Phase 9 の退路は Phase 10 でファイルに写した表になった。
+- 残りは upstream への PR、Phase 5 で未対応の #321、Phase 7 の残課題(返信制限の実機確認のみ。長文の Re-draft と BTD の起動は 2026-10-25 に対応)、Phase 8 の残課題(2026-10-25 に対応)、Phase 9 の残課題(廃止 ID への応答の形、`off` の実機確認)、Phase 10 の残課題(代替経路の実発火、初回起動の待ち、10-j の新着取得の HAR 確認。BTD の返信制限と記事・スペースのカードと 10-j の即時表示・非重複は 2026-10-25 に確認。詳細ビューは 10-h、`friendships/show` は 10-i で代替を用意した)。Phase 6 の残課題だった Home のクエリ ID は Phase 9 で自動追従になり、Phase 9 の退路は Phase 10 でファイルに写した表になった。
 - upstream へは #554(RTL)、#552(Mentions)、Phase 1(92f0be5 / bfcbdd3)の順で PR を出す。起動ハングの修正は limex 氏の #562 が未マージで close されているので、出すならクレジット付きで出し直す。
