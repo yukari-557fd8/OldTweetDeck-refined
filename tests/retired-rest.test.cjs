@@ -244,6 +244,86 @@ test('while REST answers, the conversation request goes out to it with the usual
     assert.equal(variablesOf(graphqlRequests(XHR)[0]).focalTweetId, '555');
 });
 
+// Better TweetDeck's question, as it sends it
+const SHOW = (target) => `https://api.x.com/1.1/friendships/show.json?source_id=42&${target}&cards_platform=Web-13&include_entities=1`;
+const gUserRel = (id, perspectives) => ({ ...gUser(id), relationship_perspectives: { following: false, followed_by: false, blocking: false, muting: false, ...perspectives } });
+const relationshipOf = (text) => { const r = JSON.parse(text).relationship; return { s: [r.source.following, r.source.followed_by], t: [r.target.following, r.target.followed_by], target: r.target.screen_name, source: r.source.id_str }; };
+
+test('friendships/show is answered from the relationship a timeline user carried, without asking X', async () => {
+    const { context, XHR } = load({ localStorage: { twitterAccountID: '42' } });
+    // an author that came through a timeline: follows us, we do not follow back
+    vm.runInContext('legacyUserFromGraph', context)(gUserRel('7', { followed_by: true }));
+    const byName = await legacyGet(context, SHOW('target_screen_name=user7'));
+    const answer = await byName.done;
+    assert.equal(answer.status, 200);
+    assert.equal(byName.xhr.url, undefined, 'never asked X');
+    assert.deepEqual(relationshipOf(answer.text), { s: [false, true], t: [true, false], target: 'user7', source: '42' });
+    const byId = await legacyGet(context, SHOW('target_id=7'));
+    assert.deepEqual(relationshipOf((await byId.done).text).s, [false, true]);
+    const body = JSON.parse(answer.text).relationship;
+    assert.equal(body.source.id, 42);
+    assert.equal(body.target.id_str, '7');
+    assert.equal(body.source.blocking, false);
+    assert.equal(body.source.muting, false);
+    assert.deepEqual(graphqlRequests(XHR), []);
+});
+
+test('an unknown account, a stale answer or another source account go to REST while it answers', async () => {
+    const { context } = load({ localStorage: { twitterAccountID: '42' } });
+    const unknown = await legacyGet(context, SHOW('target_screen_name=nobody'));
+    assert.equal(unknown.xhr.url, SHOW('target_screen_name=nobody'));
+    vm.runInContext('legacyUserFromGraph', context)(gUserRel('7', { following: true }));
+    vm.runInContext('relationships.byName.user7.at = Date.now() - 11 * 60 * 1000', context);
+    const stale = await legacyGet(context, SHOW('target_screen_name=user7'));
+    assert.equal(stale.xhr.url, SHOW('target_screen_name=user7'));
+    vm.runInContext('relationships.byName.user7.at = Date.now()', context);
+    const other = await legacyGet(context, 'https://api.x.com/1.1/friendships/show.json?source_id=99&target_screen_name=user7');
+    assert.equal(other.xhr.url, 'https://api.x.com/1.1/friendships/show.json?source_id=99&target_screen_name=user7');
+    const fresh = await legacyGet(context, SHOW('target_screen_name=user7'));
+    assert.equal(fresh.xhr.url, undefined);
+});
+
+test('once REST is gone, a remembered answer of any age serves and an unknown account is looked up', async () => {
+    const lookups = [];
+    const userByScreenName = [/UserByScreenName/, { body: (url) => { lookups.push(variablesOf(url).screen_name); return { data: { user: { result: gUserRel('8', { following: true, followed_by: true, muting: true }) } } }; } }];
+    const missing = [/UserByRestId/, { body: () => ({ data: { user: {} } }) }];
+    const { context, XHR } = load({ localStorage: { twitterAccountID: '42', OTDpreferGraphql: '1' }, responders: [userByScreenName, missing] });
+    vm.runInContext('legacyUserFromGraph', context)(gUserRel('7', { following: true }));
+    vm.runInContext('relationships.byName.user7.at = Date.now() - 3 * 60 * 60 * 1000', context);
+    const old = await legacyGet(context, SHOW('target_screen_name=user7'));
+    assert.deepEqual(relationshipOf((await old.done).text).s, [true, false]);
+    const looked = await legacyGet(context, SHOW('target_screen_name=user8'));
+    const answer = await looked.done;
+    assert.equal(answer.status, 200);
+    assert.deepEqual(relationshipOf(answer.text), { s: [true, true], t: [true, true], target: 'user8', source: '42' });
+    assert.equal(JSON.parse(answer.text).relationship.source.muting, true);
+    assert.deepEqual(lookups, ['user8']);
+    // remembered: the next question costs nothing
+    const again = await legacyGet(context, SHOW('target_screen_name=user8'));
+    await again.done;
+    assert.equal(graphqlRequests(XHR).length, 1);
+    // an account X does not have
+    const none = await legacyGet(context, SHOW('target_id=404'));
+    const gone = await none.done;
+    assert.equal(gone.status, 404);
+    assert.equal(JSON.parse(gone.text).errors[0].code, 50);
+});
+
+test("a follow or unfollow from TweetDeck updates the remembered relationship from X's answer", async () => {
+    const { context } = load({ localStorage: { twitterAccountID: '42' } });
+    vm.runInContext('legacyUserFromGraph', context)(gUserRel('7', { followed_by: true }));
+    const XHR = vm.runInContext('XMLHttpRequest', context);
+    const follow = new XHR();
+    follow.open('POST', 'https://api.x.com/1.1/friendships/create.json', true);
+    const read = new Promise((resolve) => { follow.onload = () => resolve(JSON.parse(follow.responseText)); });
+    await follow.send('user_id=7');
+    assert.equal(follow.url, 'https://api.x.com/1.1/friendships/create.json');
+    follow.respond(200, JSON.stringify({ id_str: '7', screen_name: 'user7', following: true, followed_by: true }));
+    assert.equal((await read).following, true, 'legacy still gets the user');
+    const shown = await legacyGet(context, SHOW('target_screen_name=user7'));
+    assert.deepEqual(relationshipOf((await shown.done).text).s, [true, true]);
+});
+
 test('a GraphQL source that fails answers legacy with 503 instead of an empty success', async () => {
     const failing = [/CombinedLists/, { status: 404, body: () => ({ errors: [{ message: 'operation not found' }] }) }];
     const { context } = load({ localStorage: { OTDpreferGraphql: '1' }, responders: [failing] });

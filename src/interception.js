@@ -434,6 +434,7 @@ function applyGraphUserState(user, result) {
     if (relationship) {
         if (!("following" in user)) user.following = !!relationship.following;
         if (!("followed_by" in user)) user.followed_by = !!relationship.followed_by;
+        rememberRelationship(user, relationship);
     }
     user.ext_is_blue_verified = !!result?.is_blue_verified;
     if (result?.verification?.verified_type) user.ext_verified_type = result.verification.verified_type;
@@ -809,6 +810,7 @@ const RETIRED_REST_ANSWERS = {
     "/1.1/users/contributees/pending.json": "an empty list",
     "/1.1/saved_searches/list.json": "an empty list",
     "/2/timeline/conversation/{id}.json": "TweetDetail",
+    "/1.1/friendships/show.json": "the relationship the timelines carry, or UserByScreenName",
 };
 
 // The key a path is remembered under: the one entry for every conversation.
@@ -1127,6 +1129,148 @@ async function answerConversationFromGraph(xhr, focalId) {
         return;
     }
     emulateResponse(xhr);
+}
+
+// ---- friendships/show.json from what the timelines already said -------------------------------
+
+// Better TweetDeck asks friendships/show.json for every author it draws (about thirty requests
+// at startup) to show its "follows you" and mutual badges; x.com itself no longer calls it. Every
+// GraphQL user that passes through this file carries the same answer in relationship_perspectives
+// (following, followed_by, blocking, muting), so it is remembered per user, and the question is
+// answered from that for the login account while the answer is recent. REST answers the rest while
+// it lives; once it is gone (OTDretiredRest), or with OTDpreferGraphql, a remembered answer of any
+// age serves, and an unknown account is looked up with UserByScreenName / UserByRestId. A follow or
+// unfollow from TweetDeck updates the memory from X's answer to it.
+const RELATIONSHIP_FRESH = 10 * 60 * 1000;
+const relationships = { byId: {}, byName: {} };
+
+function rememberRelationship(user, perspectives) {
+    if (!user?.id_str || !perspectives) return;
+    const entry = {
+        id_str: String(user.id_str),
+        screen_name: String(user.screen_name || ""),
+        following: !!perspectives.following,
+        followed_by: !!perspectives.followed_by,
+        blocking: !!perspectives.blocking,
+        muting: !!perspectives.muting,
+        at: Date.now(),
+    };
+    relationships.byId[entry.id_str] = entry;
+    if (entry.screen_name) relationships.byName[entry.screen_name.toLowerCase()] = entry;
+}
+
+function knownRelationship(targetId, targetName) {
+    return (targetId && relationships.byId[String(targetId)]) || (targetName && relationships.byName[String(targetName).toLowerCase()]) || null;
+}
+
+function loginUserId() {
+    return String(verifiedUser?.id_str ?? localStorage.twitterAccountID ?? "");
+}
+
+// The v1.1 answer: `source` is the login account, `target` the other one; each side's `following`
+// is what that side does. Fields X no longer tells (can_dm, notifications, ...) are false.
+function friendshipShowBody(target) {
+    const sourceId = loginUserId();
+    return { relationship: {
+        source: {
+            id: +sourceId || 0, id_str: sourceId, screen_name: verifiedUser?.screen_name || "",
+            following: target.following, followed_by: target.followed_by, live_following: false,
+            following_received: false, following_requested: false, notifications_enabled: false,
+            can_dm: false, can_media_tag: false, blocking: target.blocking, blocked_by: false,
+            muting: target.muting, want_retweets: true, all_replies: false, marked_spam: false,
+        },
+        target: {
+            id: +target.id_str || 0, id_str: target.id_str, screen_name: target.screen_name,
+            following: target.followed_by, followed_by: target.following,
+            following_received: false, following_requested: false,
+        },
+    } };
+}
+
+async function answerFriendshipFromGraph(xhr, targetId, targetName) {
+    try {
+        const { status, data } = targetId
+            ? await graphqlGet("UserByRestId", { userId: String(targetId), withSafetyModeUserFields: true })
+            : await graphqlGet("UserByScreenName", { screen_name: String(targetName), withGrokTranslatedBio: true }, { withPayments: false, withAuxiliaryUserLabels: true });
+        if (status < 200 || status >= 300) throw new Error(`HTTP ${status}`);
+        const user = legacyUserFromGraph(data?.data?.user?.result); // remembers the relationship on the way
+        const known = user && knownRelationship(user.id_str, user.screen_name);
+        if (!known) {
+            xhr._status = 404;
+            xhr._responseText = JSON.stringify({ errors: [{ code: 50, message: "User not found." }] });
+            emulateResponse(xhr);
+            return;
+        }
+        xhr._responseText = JSON.stringify(friendshipShowBody(known));
+    } catch (e) {
+        answerWithError(xhr, "could not look up a friendship", e);
+        return;
+    }
+    emulateResponse(xhr);
+}
+
+const friendshipShowRoute = {
+    path: "/1.1/friendships/show.json",
+    method: "GET",
+    openHandler: deferOpen,
+    beforeRequest: (xhr) => {
+        const params = new URL(xhr.modUrl).searchParams;
+        xhr.storage.show = {
+            sourceId: params.get("source_id"),
+            sourceName: params.get("source_screen_name"),
+            targetId: params.get("target_id"),
+            targetName: params.get("target_screen_name"),
+        };
+    },
+    beforeSend: (xhr) => {
+        const { sourceId, sourceName, targetId, targetName } = xhr.storage.show || {};
+        const forLogin = sourceId
+            ? String(sourceId) === loginUserId()
+            : !sourceName || String(sourceName).toLowerCase() === String(verifiedUser?.screen_name || "").toLowerCase();
+        const retired = useGraphqlFor("/1.1/friendships/show.json");
+        const known = forLogin && (targetId || targetName) ? knownRelationship(targetId, targetName) : null;
+        if (known && (retired || Date.now() - known.at < RELATIONSHIP_FRESH)) {
+            xhr.storage.graphql = true;
+            xhr.storage.answer = known;
+            return;
+        }
+        if (retired && forLogin && (targetId || targetName)) {
+            xhr.storage.graphql = true;
+            return;
+        }
+        openDeferred(xhr);
+    },
+    sendHandler: (xhr, body) => {
+        if (xhr.storage.answer) {
+            xhr._responseText = JSON.stringify(friendshipShowBody(xhr.storage.answer));
+            emulateResponse(xhr);
+        } else if (xhr.storage.graphql) {
+            answerFriendshipFromGraph(xhr, xhr.storage.show.targetId, xhr.storage.show.targetName);
+        } else {
+            xhr.send(body);
+        }
+    },
+};
+
+// friendships/create.json and friendships/destroy.json answer with the other account as a v1.1
+// user, following / followed_by included: the memory follows what TweetDeck just did.
+function friendshipChangeRoute(path) {
+    return {
+        path,
+        method: "POST",
+        afterRequest: (xhr) => {
+            const text = xhr.responseText;
+            try {
+                const user = JSON.parse(text);
+                if (user?.id_str && "following" in user) {
+                    rememberRelationship(user, { following: user.following, followed_by: user.followed_by, blocking: user.blocking, muting: user.muting });
+                }
+            } catch (e) {
+                // not a user: legacy reads the answer as it is
+            }
+            return text;
+        },
+    };
 }
 
 // A route that lets REST through while it answers, and takes the GraphQL source otherwise.
@@ -3989,6 +4133,9 @@ const proxyRoutes = [
     emptyWhenRetiredRoute("/1.1/users/contributees.json"),
     emptyWhenRetiredRoute("/1.1/users/contributees/pending.json"),
     emptyWhenRetiredRoute("/1.1/saved_searches/list.json"),
+    friendshipShowRoute,
+    friendshipChangeRoute("/1.1/friendships/create.json"),
+    friendshipChangeRoute("/1.1/friendships/destroy.json"),
     {
         path: "/1.1/help/configuration.json",
         method: "GET",

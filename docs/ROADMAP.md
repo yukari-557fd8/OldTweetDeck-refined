@@ -462,6 +462,14 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 - テスト: `tests/retired-rest.test.cjs` に 2 件(祖先の SelfThread・本人・2 本のスレッド・show more・ミュート著者の除外・終端、REST 素通しの URL 掃除と 410 の記憶が別の会話にも効くこと)。`node --test tests/*.test.cjs` は 140 件通過。
 - 実機(2026-10-25、Edge): 同じツイートの詳細ビューを REST で開くと 4 項目(返信 2)、`OTDpreferGraphql = "1"` で再読込して開くと 5 項目(返信 3、`TweetDetail` 1 回、REST の要求なし、console に警告なし)。差の 1 件はその間に増えた返信とみられる。確認後にフラグは外した。
 
+### 10-i. `friendships/show.json` をタイムラインが運んできた関係から答える(2026-10-25)
+
+- Better TweetDeck は描画する投稿者ごとに `friendships/show.json` を呼ぶ(起動直後に約 47 回、バッジ 1 つにつき 1 回)。x.com 本体は呼んでいない。OTD を通る GraphQL のユーザーはすべて `relationship_perspectives`(following / followed_by / blocking / muting)を持っているので、`applyGraphUserState` で `rememberRelationship` がユーザーごとに覚え、ログインアカウントが source の質問には `friendshipShowBody` で v1.1 の `relationship`(`source` / `target` の following と followed_by、blocking、muting。X がもう教えない can_dm などは false)を返す。
+- 切り替え: 覚えた関係が 10 分以内ならその場で答える。それ以外は REST が答えるうちは REST。REST が 404 / 410 を返したら(`OTDretiredRest`)、または `OTDpreferGraphql = "1"` なら、古い記憶でも答え、知らないアカウントは `UserByScreenName` / `UserByRestId` で引く(引いた結果も覚える。X に無いアカウントは code 50 の 404)。source が別アカウント(Teams)の質問は REST のまま。
+- TweetDeck からのフォロー・解除(`friendships/create.json` / `destroy.json`)の応答(v1.1 の user)で記憶を更新する。
+- テスト: `tests/retired-rest.test.cjs` に 4 件(記憶からの応答と source / target の向き、未知・古い記憶・別 source は REST、退役後の古い記憶と `UserByScreenName` の引き直しと 404、フォロー応答での更新)。`node --test tests/*.test.cjs` は 144 件通過。
+- 実機(2026-10-25、Edge): 再読込前は記事 50 件に BTD の相互バッジ 47 個、`friendships/show` の REST 47 回。再読込後は記事 49 件にバッジ 46 個、REST 0 回、覚えた関係 96 件、console に警告なし。
+
 ### 10-d. 残課題(2026-10-25 時点の整理。他 Phase の残りもここにまとめる)
 
 実機で確認すれば閉じられるもの(ユーザー操作が要る):
@@ -477,7 +485,7 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 実装が残っているもの(影響の大きい順):
 
 1. ~~詳細ビュー `/2/timeline/conversation/{id}.json` の `TweetDetail` への移行~~ → 10-h で対応(REST 優先、退役時に `TweetDetail`)。
-2. `friendships/show.json` の emulate(BTD の相互フォローバッジ)。BTD は表示中の投稿者ごとに呼び、起動直後だけで約 30 回。OTD が GraphQL のユーザー状態(`following` / `followed_by`)を持っているので、そこから `relationship` を返せる。退役への備えと起動時の REST 削減を兼ねる。
+2. ~~`friendships/show.json` の emulate~~ → 10-i で対応(覚えた関係から答え、退役時は GraphQL で引く)。
 3. Phase 8-c: 「users I follow」(`FROM_FOLLOWING`)フィルタを `following` を見るクライアント側フィルタに置き換える。`followedBy` がアプリ内のフォロー・解除で更新されない点も。
 4. Phase 7: Re-draft で長文の後半が消える(`OTDenableAutoExpand` が `"1"` でないと省略のまま)。BTD が起動しないことがある(document_idle の差し込みが OTD の文書差し替えで消える、コードからの推定)。
 5. 写した表 `GRAPHQL_BUILTIN` の定期更新。console に `the built-in GraphQL table (日付) is behind x.com for …` が出たら、`copy(localStorage.OTDgraphqlOperations)` を保存して `node tools/graphql-builtin.mjs <file>` の出力で置き換える。
@@ -503,5 +511,5 @@ upstream への PR は「進め方」のとおり(#554、#552、Phase 1、起動
 
 - Phase ごとに PR を分け、`tests/` に `node:test` のケースを足す。実行は `node --test tests/*.test.cjs`。
 - Phase 1 から Phase 5 までの実機確認は 2026-10-17 に問題なし。Phase 6 は 2026-10-18 に取得間隔だけ確認し、目視とブックマーク、フォローのまとめ通知(6-d)の確認が残っている。Phase 7 は 2026-10-18 に確認済み。Phase 8 は 2026-10-19 に確認済み。Phase 9 は 2026-10-24 に確認済み。Phase 10 は 2026-10-25 に確認済み(verify_credentials の代替経路は X が拒否するまで実機では発火しない)。
-- 残りは upstream への PR、Phase 5 で未対応の #321、Phase 7 の残課題(長文の Re-draft、返信制限の確認)、Phase 8 の残課題(「users I follow」のクライアント側への置き換え)、Phase 9 の残課題(廃止 ID への応答の形、`off` の実機確認)、Phase 10 の残課題(代替経路の実発火、初回起動の待ち、BTD の返信制限と記事・スペースのカードの実機確認、`friendships/show` の emulate。詳細ビューは 10-h で `TweetDetail` の代替を用意した)。Phase 6 の残課題だった Home のクエリ ID は Phase 9 で自動追従になり、Phase 9 の退路は Phase 10 でファイルに写した表になった。
+- 残りは upstream への PR、Phase 5 で未対応の #321、Phase 7 の残課題(長文の Re-draft、返信制限の確認)、Phase 8 の残課題(「users I follow」のクライアント側への置き換え)、Phase 9 の残課題(廃止 ID への応答の形、`off` の実機確認)、Phase 10 の残課題(代替経路の実発火、初回起動の待ち、BTD の返信制限と記事・スペースのカードの実機確認。詳細ビューは 10-h、`friendships/show` は 10-i で代替を用意した)。Phase 6 の残課題だった Home のクエリ ID は Phase 9 で自動追従になり、Phase 9 の退路は Phase 10 でファイルに写した表になった。
 - upstream へは #554(RTL)、#552(Mentions)、Phase 1(92f0be5 / bfcbdd3)の順で PR を出す。起動ハングの修正は limex 氏の #562 が未マージで close されているので、出すならクレジット付きで出し直す。
