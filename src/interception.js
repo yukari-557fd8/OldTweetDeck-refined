@@ -1293,6 +1293,56 @@ function friendshipChangeRoute(path) {
     };
 }
 
+// ---- Better TweetDeck's reply restriction ----------------------------------------------------
+
+// The tweet id and mode of a ConversationControlChange body, whether `variables` is JSON text
+// (Better TweetDeck) or an object (x.com); nothing for any other body.
+function conversationControlChangeOf(body) {
+    if (typeof body !== "string" || body[0] !== "{") return null;
+    try {
+        const json = JSON.parse(body);
+        const variables = typeof json.variables === "string" ? JSON.parse(json.variables) : json.variables;
+        const tweetId = variables?.tweet_id;
+        const mode = variables?.mode;
+        if (!tweetId || typeof mode !== "string") return null;
+        return { tweet_id: String(tweetId), mode };
+    } catch (e) {
+        return null;
+    }
+}
+
+function sendConversationControlChange(xhr, change, originalBody) {
+    const table = graphqlRegistry.table || builtinGraphqlTable();
+    const known = table.ops.ConversationControlChange || builtinGraphqlTable().ops.ConversationControlChange;
+    let req;
+    try {
+        req = new XMLHttpRequest();
+        req.open("POST", `${NEW_API}/${known.id}/ConversationControlChange`, true);
+    } catch (e) {
+        xhr.send(originalBody);
+        return;
+    }
+    req.setRequestHeader("Authorization", getRequestHeader(xhr, "Authorization") || PUBLIC_TOKENS[0]);
+    req.setRequestHeader("X-Csrf-Token", getRequestHeader(xhr, "X-Csrf-Token") || csrfToken());
+    req.setRequestHeader("X-Twitter-Auth-Type", "OAuth2Session");
+    req.setRequestHeader("X-Twitter-Active-User", "yes");
+    req.setRequestHeader("Content-Type", "application/json");
+    const settle = (done) => {
+        if (done) {
+            xhr._status = req.status;
+            xhr._statusText = "OK";
+            xhr._responseText = req.responseText;
+            emulateResponse(xhr);
+            return;
+        }
+        console.warn(`OldTweetDeck: ConversationControlChange on x.com's path answered ${req.status}; sending Better TweetDeck's request as it was`);
+        xhr.send(originalBody);
+    };
+    req.onload = () => settle(req.status >= 200 && req.status < 300 && /tweet_conversation_control_put/.test(String(req.responseText || "")));
+    req.onerror = () => settle(false);
+    req.send(JSON.stringify({ variables: { tweet_id: change.tweet_id, mode: change.mode }, queryId: known.id }));
+}
+
 // A route that lets REST through while it answers, and takes the GraphQL source otherwise.
 function restOrGraphqlRoute(path, answer) {
     return {
@@ -4163,24 +4213,19 @@ const proxyRoutes = [
         sendHandler: emulateResponse,
         afterRequest: () => HELP_CONFIGURATION,
     },
-    // Better TweetDeck restricts who can reply by POSTing ConversationControlChange to the old
-    // api.x.com/graphql/<id>/ path with a 2023 query id, and shows nothing when that fails. Send it
-    // where x.com sends it; once the URL is x.com's, the registry keeps the id and the body's
-    // queryId current like any other operation.
+    // Better TweetDeck restricts who can reply in the old GraphQL form: POST api.x.com/graphql/
+    // with {"variables": "<JSON text>", "queryId": "<its 2023 id>"} (seen 2026-10-25; X still
+    // answers {"data":{"tweet_conversation_control_put":"Done"}} and the tweet gets the policy).
+    // x.com sends the same mutation to /i/api/graphql/<current id>/ConversationControlChange. That
+    // goes first, with the id the registry keeps current; when it does not answer "Done", Better
+    // TweetDeck's own request goes out as it was. Better TweetDeck shows nothing either way.
     {
-        path: /^\/graphql\/[\w-]+\/ConversationControlChange$/,
+        path: /^\/graphql\/(?:[\w-]+\/ConversationControlChange)?\/?$/,
         method: "POST",
-        beforeRequest: (xhr) => {
-            const table = graphqlRegistry.table || builtinGraphqlTable();
-            const known = table.ops.ConversationControlChange || builtinGraphqlTable().ops.ConversationControlChange;
-            xhr.modUrl = `${NEW_API}/${known.id}/ConversationControlChange`;
-        },
-        beforeSendHeaders: (xhr) => {
-            xhr.modReqHeaders["Content-Type"] = "application/json";
-            if (!getRequestHeader(xhr, "Authorization")) xhr.modReqHeaders["Authorization"] = PUBLIC_TOKENS[0];
-            if (!getRequestHeader(xhr, "X-Csrf-Token")) xhr.modReqHeaders["X-Csrf-Token"] = csrfToken();
-            xhr.modReqHeaders["X-Twitter-Auth-Type"] = "OAuth2Session";
-            xhr.modReqHeaders["X-Twitter-Active-User"] = "yes";
+        sendHandler: (xhr, body) => {
+            const change = conversationControlChangeOf(body);
+            if (change) sendConversationControlChange(xhr, change, body);
+            else xhr.send(body);
         },
     },
     {

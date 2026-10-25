@@ -8,7 +8,9 @@ class FakeXHR {
     constructor() {
         this.readyState = 0; this.status = 0; this.statusText = ''; this.responseText = ''; this.headers = {}; this.sentBody = undefined;
         this.onload = null; this.onloadend = null; this.onerror = null; this.onreadystatechange = null;
+        FakeXHR.instances.push(this);
     }
+    static instances = [];
     open(method, url) { this.method = method; this.url = url; this.readyState = 1; }
     setRequestHeader(name, value) { this.headers[name] = value; }
     send(body) { this.sentBody = body; }
@@ -53,22 +55,45 @@ test('help/configuration.json is answered here with current values, without aski
     assert.equal(config.transformedURLLength, 23);
 });
 
-test("Better TweetDeck's reply restriction goes to x.com's GraphQL path with the current query id", async () => {
+// Better TweetDeck's request as seen on 2026-10-25: the old GraphQL form, variables as JSON text.
+const BTD_URL = 'https://api.x.com/graphql/';
+const BTD_BODY = JSON.stringify({ variables: JSON.stringify({ tweet_id: '1', mode: 'ByInvitation' }), queryId: 'hb1elGcj6769uT8qVYqtjw' });
+const BTD_HEADERS = { authorization: 'Bearer from-btd', 'x-csrf-token': 'csrf-from-btd', 'content-type': 'application/json' };
+
+test("Better TweetDeck's reply restriction goes to x.com's GraphQL path with the current query id, and legacy sees X's answer", async () => {
     const context = load();
+    FakeXHR.instances.length = 0;
     const current = vm.runInContext('builtinGraphqlTable()', context).ops.ConversationControlChange.id;
     assert.match(current, /^[\w-]{22}$/);
-    const body = JSON.stringify({ variables: { tweet_id: '1', mode: 'Community' }, queryId: 'hb1elGcj6769uT8qVYqtjw' });
-    const { xhr } = await send(context, 'POST', 'https://api.x.com/graphql/hb1elGcj6769uT8qVYqtjw/ConversationControlChange', body, { Authorization: 'Bearer from-btd', 'X-Csrf-Token': 'csrf-from-btd' });
-    assert.equal(xhr.url, `https://x.com/i/api/graphql/${current}/ConversationControlChange`);
-    assert.equal(JSON.parse(xhr.sentBody).queryId, current);
-    assert.deepEqual(JSON.parse(xhr.sentBody).variables, { tweet_id: '1', mode: 'Community' });
-    assert.equal(xhr.headers['x-client-transaction-id'], `signed:/i/api/graphql/${current}/ConversationControlChange`);
-    assert.equal(xhr.headers['Content-Type'], 'application/json');
-    assert.equal(xhr.headers.Authorization, 'Bearer from-btd', "the caller's own headers stay");
-    assert.equal(xhr.headers['X-Csrf-Token'], 'csrf-from-btd');
-    // x.com's own path is not a Better TweetDeck request
-    const own = await send(context, 'POST', `https://x.com/i/api/graphql/${current}/ConversationControlChange`, body);
-    assert.equal(own.xhr.url, `https://x.com/i/api/graphql/${current}/ConversationControlChange`);
+    const { xhr, done } = await send(context, 'POST', BTD_URL, BTD_BODY, BTD_HEADERS);
+    await new Promise((r) => setTimeout(r, 10)); // the rerouted request goes through the Proxy's async send
+    const inner = FakeXHR.instances.find((x) => /\/i\/api\/graphql\/[\w-]+\/ConversationControlChange$/.test(x.url || ''));
+    assert.equal(inner.url, `https://x.com/i/api/graphql/${current}/ConversationControlChange`);
+    assert.deepEqual(JSON.parse(inner.sentBody), { variables: { tweet_id: '1', mode: 'ByInvitation' }, queryId: current });
+    assert.equal(inner.headers['x-client-transaction-id'], `signed:/i/api/graphql/${current}/ConversationControlChange`);
+    assert.equal(inner.headers['Content-Type'], 'application/json');
+    assert.equal(inner.headers.Authorization, 'Bearer from-btd', "the caller's own headers travel with it");
+    assert.equal(inner.headers['X-Csrf-Token'], 'csrf-from-btd');
+    assert.equal(xhr.sentBody, undefined, "Better TweetDeck's own request was not sent");
+    inner.respond(200, '{"data":{"tweet_conversation_control_put":"Done"}}');
+    assert.deepEqual(await done, { status: 200, text: '{"data":{"tweet_conversation_control_put":"Done"}}' });
+});
+
+test("when x.com's path does not answer Done, Better TweetDeck's own request goes out as it was", async () => {
+    const context = load();
+    FakeXHR.instances.length = 0;
+    const { xhr } = await send(context, 'POST', BTD_URL, BTD_BODY, BTD_HEADERS);
+    await new Promise((r) => setTimeout(r, 10));
+    const inner = FakeXHR.instances.find((x) => /\/i\/api\/graphql\/[\w-]+\/ConversationControlChange$/.test(x.url || ''));
+    inner.respond(404, '{"errors":[{"message":"not found"}]}');
+    assert.equal(xhr.url, BTD_URL);
+    assert.equal(xhr.sentBody, BTD_BODY);
+    // the same with the id-in-path form some versions use, and nothing for another body
+    FakeXHR.instances.length = 0;
+    const other = await send(context, 'POST', 'https://api.x.com/graphql/hb1elGcj6769uT8qVYqtjw/ConversationControlChange', BTD_BODY, BTD_HEADERS);
+    assert.ok(FakeXHR.instances.find((x) => /\/i\/api\/graphql\/[\w-]+\/ConversationControlChange$/.test(x.url || '')));
+    const plain = await send(context, 'POST', BTD_URL, '{"queryId":"abc","variables":"{}"}', BTD_HEADERS);
+    assert.equal(plain.xhr.sentBody, '{"queryId":"abc","variables":"{}"}');
 });
 
 const gUser = { __typename: 'User', rest_id: '7', core: { screen_name: 'user7', name: 'User 7', created_at: 'Wed Oct 14 10:00:00 +0000 2026' }, avatar: { image_url: 'https://pbs.twimg.com/7.jpg' } };

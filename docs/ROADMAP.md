@@ -279,7 +279,7 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 - フォークの変更で、BTD の読み込みや TweetDeck 内部への差し込みが壊れる箇所は無い。両方が手を入れる次の箇所は両立する: x.com リンクの判定(Phase 5)と BTD の t.co 除去、取得間隔の下限(Phase 6)と BTD のカスタム時刻(30 秒周期の時刻更新タスクを止める)、`window.Notification` の差し替え(Phase 5)、各ルートの URL の組み立てと BTD が `include_entities` 付きの要求に足す ext 系の引数、postMessage。
 - 残課題(2026-10-25 に対応。下は当時の記述):
   - **Re-draft で長文の後半が消える**(対応済み: 自分のアカウント(ログインと、legacy が持つ全アカウント)の長文は常に全文にする。`ownAccountIds` / `parseTweet`、RT 先も同じ。`tests/parse-tweet.test.cjs` に 1 件): Phase 3(31dc3bc)から、長文は `OTDenableAutoExpand` が `"1"` でない限り省略のまま。「Expand tweet」も表示だけを書き換え、chirp の `text` は省略のまま(`files/bundle.js` 55 行)。BTD の Re-draft は `chirp.text` から作成欄を作り、すぐに元の投稿を削除するので、280 字を超える自分の投稿では後半が失われる。upstream は常に全文にしていたので、フォークで起きるようになった。回避策は `localStorage.OTDenableAutoExpand = '1'`。修正案は、自分のアカウントの投稿だけ常に全文にすること。
-  - **返信制限(conversation control)が効いているか未確認**(10-g で `x.com/i/api/graphql/<現行 ID>/` へ向け直すルートを足した。実機は未確認): BTD は投稿のあとに、旧形式の `POST https://api.x.com/graphql/` で ConversationControlChange(`hb1elGcj6769uT8qVYqtjw`)を送る。OTD にこれを扱うルートは無く、そのまま X に届く。失敗しても BTD は何も表示しないので、制限したつもりの投稿が全員返信可のまま公開されうる。
+  - **返信制限(conversation control)が効いているか未確認**(2026-10-25 に実機で確認: 旧形式の要求に X は今も 200 "Done" を返し、投稿に制限が付く。10-g で x.com のパスを先に使うルートにした): BTD は投稿のあとに、旧形式の `POST https://api.x.com/graphql/` で ConversationControlChange(`hb1elGcj6769uT8qVYqtjw`)を送る。OTD にこれを扱うルートは無く、そのまま X に届く。失敗しても BTD は何も表示しないので、制限したつもりの投稿が全員返信可のまま公開されうる。
   - **BTD が起動しないことがある(コードからの推定)**(対応済み: `src/injection.js` の `keepOtherExtensions` が `data-btd-settings` / `data-btd-version` を持つ script 要素を差し替えの前に取り分け、新しい `<head>` に戻す。実行済みの script 要素は付け直しても再実行されない。`injection.js` は拡張機能本体なので 4.4.1 として入れ直しが必要。`tests/injection.test.cjs` に 1 件): BTD は document_idle に設定付きのスクリプトを `<head>` に入れる。OTD が文書を差し替える前に入ると要素ごと消え、BTD は何も出さずに起動しない(リロードで直る)。また BTD の対象は `https://x.com/i/tweetdeck` だけで、`?` 付きの URL では読み込まれない。
   - BTD の Advanced Mute Engine のフィルタは TweetDeck の設定に入るので、Phase 4 以降はキーワードミュートと同じくログインアカウントごとに保存される。
 
@@ -447,7 +447,7 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 ### 10-g. D 群: 細かな差分(2026-10-25)
 
 - `help/configuration.json`(410)を emulate する。legacy は失敗時に 2016 年の既定値へ落ちていたので壊れてはいなかったが、起動時のエラーと、DM の文字数上限などが既定値のままだった。X が最後に公開していた値(`HELP_CONFIGURATION`: dm_text_character_limit 10000、characters_reserved_per_media 24、photo_size_limit 5 MB、短縮 URL 23)を返す。`photo_size_limit` は legacy が参照していない(アップロード上限の判定には使われない)。
-- Better TweetDeck の返信制限: `POST api.x.com/graphql/<2023 年の ID>/ConversationControlChange` を、`x.com/i/api/graphql/<現行 ID>/ConversationControlChange` に向け直すルート。URL が x.com の形になればレジストリが ID と本文の `queryId` を現行に保つ。`ConversationControlChange` をレジストリ(計 24)と写した表に足した。BTD 側のヘッダは残し、無ければ Bearer / csrf を補う。実機は未確認(BTD で返信制限付きの投稿が必要)。
+- Better TweetDeck の返信制限: 実機(2026-10-25、「@メンションだけ」で投稿)で見ると、BTD の要求は `POST https://api.x.com/graphql/`(パスに ID も操作名も無い旧形式)で、本文が `{"variables": "<JSON 文字列>", "queryId": "hb1elGcj6769uT8qVYqtjw"}`。X はこれに 200 `{"data":{"tweet_conversation_control_put":"Done"}}` を返し、投稿には `conversation_control.policy: "ByInvitation"` が付いていた(旧エンドポイントと 2023 年の ID がまだ生きている)。最初に書いた `/graphql/<ID>/ConversationControlChange` を見るルートは一致せず素通ししていたので、`/graphql/` も対象にし、本文から tweet_id と mode を読んで `x.com/i/api/graphql/<現行 ID>/ConversationControlChange` に JSON(`variables` はオブジェクト)で送り、応答をそのまま BTD の要求に返す。x.com 側が "Done" を返さなければ BTD の要求を元のまま送る(`conversationControlChangeOf` / `sendConversationControlChange`)。`ConversationControlChange` はレジストリ(計 24)と写した表にある。
 - 通知のポーリングを cursor-top に変えた(`notificationsPollCursor`)。新着の問い合わせは直前のページの top cursor を付けて送り(x.com 本体と同じ)、10 分ごと(`TOP_RESYNC_INTERVAL`)に先頭ページ全体を読み直す。Phase 2-a の「cursor-top で未読が返らない疑い」は all.json の話で、GraphQL は x.com 本体がこの方式で動いている。`localStorage.OTDnotificationsTopCursor = "0"` で従来の全ページ取得に戻る。all.json ソースは従来どおり。通知と Mentions の共有ページ(6-a)はそのまま効く(両カラムとも同じ cursor-top 応答を受け取る)。
 - カード: X の記事(`article.article_results.result`)に `summary_large_image` カード(題名・冒頭・カバー画像、`https://x.com/i/article/<id>` へのリンク)を付ける(`presentArticle`。本文・RT 先・RT 内の引用)。スペースのカード(`3691233323:audiospace`)は `https://x.com/i/spaces/<id>` への `summary` カードにする。共通の `summaryCard` を足した。どちらも実機のタイムラインに該当する投稿が無く、表示は未確認。
 - Home の取得回数は Phase 6 の設計どおり(4 秒の下限、cursor-top で 1 回約 0.8 KB)で、重複は無かった。変更なし。
@@ -475,7 +475,7 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 実機で確認すれば閉じられるもの(ユーザー操作が要る):
 
 - 10-e の DM 送信を OTD の書き換え経由で確認する(配列形式のスニペット、または DM カラムから 1 通)。`recipient_ids` を文字列で送った 200 までは確認済み。
-- 10-g の BTD の返信制限: BTD で返信制限付きの投稿をして、ネットワークの `ConversationControlChange` が 200 になるか。
+- ~~10-g の BTD の返信制限~~ → 2026-10-25 に確認。旧形式の要求が X に通って制限が付いていた(10-g 参照)。向け直しのルートは要求の形に合わせて直し、テストで固定。直したルートは、同じ投稿に同じ mode を BTD と同じ形で送り直して確認: `x.com/i/api/graphql/JWeo7tCAhI_HwcuPcL4JrQ/ConversationControlChange` に 1 回出て 200 "Done"、`api.x.com/graphql/` には出ない。
 - 10-g の記事カードとスペースのカード: 該当する投稿がタイムラインに来たときの表示。
 - ~~10-a の初回起動の 10 秒待ち~~ → 2026-10-25 に `OTDgraphqlOperations` を消して起動して確認。写した表の `main.js` が現行デプロイと同じだったので読み取りは HTML だけで済み(全文の読み直しは起きない設計どおり)、最初の GraphQL 要求は読み取り完了後(起動 2.4 秒)に出た。保存された表は 24 操作。別デプロイでの全文読み直しと 10 秒の上限は未確認のまま。
 - 8-c の「users I follow」: 2026-10-25 に Home カラムの設定を開き、Tweet authors の選択肢が all users / users I follow / specific user… / me… / verified users / mutual follows の順で出ることを確認。
