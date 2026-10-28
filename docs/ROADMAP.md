@@ -48,7 +48,7 @@
 - cursor が無い `max_id` 要求はネットワークに出さず 503 で即応答(1-c)。全件フィルタで空になったページは次の cursor に進める。
 - `TD.controller.FeedPoller` をラップし `EXHAUSTED_API_THRESHOLD` を 1 に、refresh のたびに `intervalOfPossibility` を全域に戻す(1-d)。
 - since ポーリングは 10 分に 1 回 cursor 無しで先頭を取り直す(`TOP_RESYNC_INTERVAL`)。`seenHomeTweets` は上限 2000 の Set(1-e)。List / User の `max_id` 要求が refresh throttle でキャンセルされていた問題も解消。
-- 残課題は無い。`Math.random() > 0.6` の 40% キャンセル(1096 行)は意図的に残しており、実機で問題は出ていない。通知・Mentions の cursor-top は Phase 2 で外し、実機確認も問題なし(2026-10-17)。
+- 残課題は無い。upstream ed5432c の `Math.random() > 0.6`(35 秒以内の新着取得を 40% の確率で捨てる応急処置)は Phase 1 の時点では残していたが、Phase 6(4d26629、2026-10-18)で外した。今は legacy のスケジューラがレート制限ヘッダと下限 4 秒で間隔を決める(6-b)。通知・Mentions の cursor-top は Phase 2 で外し、実機確認も問題なし(2026-10-17)。
 
 対象 Issue: #509, #530, #531, #536, #487, #496, #495 / #517(無駄なリクエストによるレート制限悪化)。
 upstream でも「Home の下端でスピナーが出続ける」「数時間前より古いツイートが出ない」という報告が複数ある(#509, #530)。
@@ -94,8 +94,8 @@ upstream でも「Home の下端でスピナーが出続ける」「数時間前
 
 対象: #487, #496, #509, #530, #531, #536(Home / User カラムがリロードしないと更新されない)。
 
-- `Math.random() > 0.6` で 35 秒以内のポーリングを 40% キャンセル(882 行)。
-- cursor-top 使用時に X が新着を返さないケースの検証(upstream 報告ではデフォルトアカウントだけ更新されず、連携アカウントは更新される。1-a の食い違いで連携側は毎回先頭を取り直しているため、cursor-top 経路の方に問題がある可能性が高い)。
+- `Math.random() > 0.6` で 35 秒以内のポーリングを 40% キャンセル(882 行)。upstream 1565ab4 の「35 秒以内は送らない」間引きを、3 日後の ed5432c(fix not loading for now)が確率 40% に弱めたもので、更新のタイミングが読めず節約にもなっていなかった。Phase 1 では残し、Phase 6(4d26629)で間引きごと外した(6-b)。
+- cursor-top 使用時に X が新着を返さないケースの検証(upstream 報告ではデフォルトアカウントだけ更新されず、連携アカウントは更新される。1-a の食い違いで連携側は毎回先頭を取り直しているため、cursor-top 経路の方に問題がある可能性が高い)。→ 10-j で、新着取得は直前の応答の Top cursor を運ぶ形にした。
 - `seenHomeTweets` が無限に伸びる(配列 `includes` で線形走査)。上限付きに変更。
 - User カラム(#536)は `timings.user` と `xhr.storage.cursor` の条件を同じ観点で見直す。
 
@@ -503,6 +503,23 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 6. 軽微: `friendships/no_retweets/ids.json` は GraphQL に相当が無く失敗しても空リスト(放置)。x.com 本体が付ける `x-twitter-polling` / `x-web-auth-multi-user-id` ヘッダと Home の POST 化は実害なし(対応不要)。レジストリの `UsersByRestIds` はどのルートも使っていない(整理対象)。Phase 5 の #321(macOS Firefox の絵文字フォーカス)は再現できず低優先。
 
 upstream への PR は「進め方」のとおり(#554、#552、Phase 1、起動ハングは #562 のクレジット付き再提出)。
+
+---
+
+## Phase 11: 書き込み要求を x.com 本体に揃える(1)(実装済み)
+
+**状態: 実装済み。実機未確認。** 変更は `src/interception.js`、テストは `tests/write-routes.test.cjs`(3 件)。
+
+発端: 2026-10-28 に、この fork の書き込み要求と x.com 本体の書き込み要求の差を棚卸しした。背景は upstream issue 298(2024-06、古いクエリ ID と変数で送ったリプライが X にスパム扱いされ、会話で「このポストは表示できません」になった)。差は 3 群に分かれる: (1) すぐ直せて副作用が無いもの、(2) 本体の HAR を見てから決めるもの(フォローの本文とホスト、メディアアップロードの経路、Referer、`x-xp-forwarded-for`)、(3) 構造上埋められないもの(Teams の `x-act-as-user-id`、DM の旧 `dm/new.json`、要求の前後関係)。ここでは (1) を実装した。
+
+- 言語ヘッダ: `X-Twitter-Client-Language` を固定 `en` から `clientLanguage()`(`navigator.language` の言語部分、navigator が無ければ `en`)にした。書き込みだけでなく `en` 固定だった全ルート(23 か所)を揃え、通知と DM で使っていた `navigator.language` も同じ関数にした。同じセッションの読み取りと書き込みで言語が食い違わないようにするため。本体はアカウントの UI 言語を送るので、ブラウザと X の言語設定が違う人には差が残る。
+- CreateTweet の variables: `disallowed_reply_options: null` を常に付ける(本体は返信制限が無くても送る)。legacy の tweetstorm の後続は `batch_mode=subsequent` の返信として届くので、そのとき `batch_compose: "BatchSubsequent"` を付ける。先頭のツイートは legacy がスレッドになる前に普通の投稿として送るので、本体の `BatchFirst` に対応するものが無い。
+- CreateTweet の features の退路: ルートにハードコードされていた 23 鍵(2024 年の形)を、写した表(`GRAPHQL_BUILTIN`、2026-10-25、38 鍵)の値に置き換えた。登録表が有効なら送信時に差し替わる(`applyGraphqlRegistryBody`)ので挙動は変わらず、`OTDgraphqlRegistry = "off"` のときだけ効く。表を更新したらここも `tools/graphql-builtin.mjs` の値に合わせる。
+- 残り(2026-10-28 時点): 本体の現行 variables と fieldToggles の有無は HAR で確認してから合わせる(投稿、フォロー、画像付き投稿を x.com 本体で 1 回ずつ行った記録があれば足りる)。フォローは本体も v1.1 `friendships/create.json` を `x.com/i/api` と `include_*` 付きの本文で使っているので、写せば揃う。読み取り側の `x-twitter-polling` と Home の POST 化は 10-d のとおり実害なし。
+
+### Phase 11 のテスト
+
+- `tests/write-routes.test.cjs`: 書き込みの言語ヘッダがブラウザの言語になること(navigator 無しは `en`)、CreateTweet の variables(`disallowed_reply_options`、tweetstorm 後続の `batch_compose`、通常の返信には付かないこと)、登録表 off のときの features が写した表と一致すること。
 
 ---
 
