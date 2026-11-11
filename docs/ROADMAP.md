@@ -508,7 +508,7 @@ upstream への PR は「進め方」のとおり(#554、#552、Phase 1、起動
 
 ## Phase 11: 書き込み要求を x.com 本体に揃える(実装済み)
 
-**状態: 実装済み。実機確認 2026-11-11(投稿・貼り付け投稿・画像・フォロー。フォロー時の ID 解決の修正だけ未確認)。** 変更は `src/interception.js`、`src/challenge.js`、テストは `tests/write-routes.test.cjs`。最初の実装(b2d99ed、2026-10-28)のうち言語の出どころ・variables・features の退路は 11-b(4a66332)で置き換え、11-c で本体の実際の投稿・フォロー・画像アップロードと突き合わせた。
+**状態: 実装済み。実機確認 2026-11-11(投稿・貼り付け投稿・画像・フォロー)。** 変更は `src/interception.js`、`src/challenge.js`、テストは `tests/write-routes.test.cjs`。最初の実装(b2d99ed、2026-10-28)のうち言語の出どころ・variables・features の退路は 11-b(4a66332)で置き換え、11-c で本体の実際の投稿・フォロー・画像アップロードと突き合わせた。
 
 発端: 2026-10-28 に、この fork の書き込み要求と x.com 本体の書き込み要求の差を棚卸しした。背景は upstream issue 298(2024-06、古いクエリ ID と変数で送ったリプライが X にスパム扱いされ、会話で「このポストは表示できません」になった)。差は 3 群に分かれる: (1) すぐ直せて副作用が無いもの、(2) 本体の HAR を見てから決めるもの(フォローの本文とホスト、メディアアップロードの経路、Referer、`x-xp-forwarded-for`)、(3) 構造上埋められないもの(Teams の `x-act-as-user-id`、DM の旧 `dm/new.json`、要求の前後関係)。ここでは (1) を実装した。
 
@@ -562,7 +562,7 @@ HAR で分かったが手を付けていないもの:
 
 - 投稿 3 件は 200。URL、ヘッダ名、本文は本体と同じで、違いは `semantic_annotation_options` の中身だけ(手入力 `{"source":"Unknown"}`、貼り付けのみ `{"composition_signal_1":true,"source":"Unknown"}`、本体は `{"source":"Htl"}`)。legacy は送信が終わるまで作成欄の本文を消さないので、欄との照合は効いている。
 - アップロードは INIT 202 / APPEND 204 ×4 / FINALIZE 201。URL とヘッダ名は本体と同じ。本体のときと同じ PNG を上げており、4 断片から計算した `original_md5` は本体が送った値と一致した。
-- フォローは 200、URL とヘッダは本体と同じ。ただし ID を知らない相手だったので `UserByScreenName` を引きに行き、**403 で失敗**して `screen_name` と legacy の既定パラメータ付きで送っていた。原因は `lookupUserId` が認証系のヘッダ(`authorization`、`x-csrf-token`、`x-twitter-auth-type`)を付けずに要求していたこと(以前からの不具合で、リストへの名前での追加も同じ経路)。→ `graphqlGet` 経由にして本体のプロフィール画面と同じ要求にし、カラムが表示したユーザー(投稿者・RT 元・引用元)の ID を全部覚えるようにした(`fillUserFromGraph` で `rememberUser`)。引けなかったときは `screen_name` だけを付ける(legacy の既定パラメータは落とす)。この修正は実機未確認。
+- フォローは 200、URL とヘッダは本体と同じ。ただし ID を知らない相手だったので `UserByScreenName` を引きに行き、**403 で失敗**して `screen_name` と legacy の既定パラメータ付きで送っていた。原因は `lookupUserId` が認証系のヘッダ(`authorization`、`x-csrf-token`、`x-twitter-auth-type`)を付けずに要求していたこと(以前からの不具合で、リストへの名前での追加も同じ経路)。→ `graphqlGet` 経由にして本体のプロフィール画面と同じ要求にし、カラムが表示したユーザー(投稿者・RT 元・引用元)の ID を全部覚えるようにした(`fillUserFromGraph` で `rememberUser`)。引けなかったときは `screen_name` だけを付ける(legacy の既定パラメータは落とす)。同日 11:02 UTC の再確認: カラムに出ていた相手をフォローし、ID を引く要求は出ず、本文は本体と同じ `…この修正は実機未確認。skip_status=1この修正は実機未確認。user_id=<ID>`(200)。名前から引く要求そのものは、この回は発生していない(テストのみ)。
 - 全 API 要求(26 件)に `x-client-uuid` と TweetDeck の client version は無く、言語は `ja`。Home と通知の取得は従来どおり 200。
 - その前の HAR(10:45 UTC)は `OTDalwaysUseLocalFiles` が効いておらず main(8ecfe22)で動いていた。そこで実行時の登録表が読んだ `NotificationsTimeline` の現行 ID(`XANkUc…`、Home と同じ 42 鍵)が分かり、写した表に反映した(d1f667c)。
 
