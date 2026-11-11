@@ -506,9 +506,9 @@ upstream への PR は「進め方」のとおり(#554、#552、Phase 1、起動
 
 ---
 
-## Phase 11: 書き込み要求を x.com 本体に揃える(1)(実装済み)
+## Phase 11: 書き込み要求を x.com 本体に揃える(実装済み)
 
-**状態: 実装済み。実機未確認。** 変更は `src/interception.js`、テストは `tests/write-routes.test.cjs`(3 件)。
+**状態: 実装済み。実機未確認。** 変更は `src/interception.js`、`src/challenge.js`、テストは `tests/write-routes.test.cjs`。最初の実装(b2d99ed、2026-10-28)のうち言語の出どころ・variables・features の退路は 11-b で置き換えた。
 
 発端: 2026-10-28 に、この fork の書き込み要求と x.com 本体の書き込み要求の差を棚卸しした。背景は upstream issue 298(2024-06、古いクエリ ID と変数で送ったリプライが X にスパム扱いされ、会話で「このポストは表示できません」になった)。差は 3 群に分かれる: (1) すぐ直せて副作用が無いもの、(2) 本体の HAR を見てから決めるもの(フォローの本文とホスト、メディアアップロードの経路、Referer、`x-xp-forwarded-for`)、(3) 構造上埋められないもの(Teams の `x-act-as-user-id`、DM の旧 `dm/new.json`、要求の前後関係)。ここでは (1) を実装した。
 
@@ -517,9 +517,36 @@ upstream への PR は「進め方」のとおり(#554、#552、Phase 1、起動
 - CreateTweet の features の退路: ルートにハードコードされていた 23 鍵(2024 年の形)を、写した表(`GRAPHQL_BUILTIN`、2026-10-25、38 鍵)の値に置き換えた。登録表が有効なら送信時に差し替わる(`applyGraphqlRegistryBody`)ので挙動は変わらず、`OTDgraphqlRegistry = "off"` のときだけ効く。表を更新したらここも `tools/graphql-builtin.mjs` の値に合わせる。
 - 残り(2026-10-28 時点): 本体の現行 variables と fieldToggles の有無は HAR で確認してから合わせる(投稿、フォロー、画像付き投稿を x.com 本体で 1 回ずつ行った記録があれば足りる)。フォローは本体も v1.1 `friendships/create.json` を `x.com/i/api` と `include_*` 付きの本文で使っているので、写せば揃う。読み取り側の `x-twitter-polling` と Home の POST 化は 10-d のとおり実害なし。
 
+### 11-b. x.com 本体の HAR(2026-11-11)との突き合わせ(実装済み、実機未確認)
+
+材料: `x.com.har`(2026-11-11 09:52 UTC、`x.com/home` の読み込み)。**ファイルは 36.7 MB で途中で切れており、読めたのは最初の 7 秒・294 件だけ。投稿・フォロー・画像アップロードの要求そのものは入っていない。** 使えたのは (a) 本体の API 要求 46 件の実ヘッダ、(b) `main.b7fce08cdef7f9f8a.js` と `bundle.LoggedInApiFilters` の本文(書き込み要求を組み立てるコード)、(c) ページの feature switch。(b) は静的に読んだもので、実際の書き込み要求での確認は残っている。HAR は Edge の「sanitized」保存で `authorization` と `cookie` が落ちている。
+
+分かったことと対応:
+
+- **`X-Twitter-Client-Version`**: legacy の `TD.net.ajax` が全要求に `Twitter-TweetDeck-blackbird-chrome/<版> web/` を付けている。ルートを持つ要求は個別に消していたが、ルートの無い要求(フォロー、ミュート、ブロック、DM、リスト作成など)はそのまま X に届いていた。本体はこのヘッダを一切送らない(46 件中 0、バンドルにも文字列が無い)。→ `alignClientHeaders`(Proxy の `send`)が x.com / twitter.com 宛ての全要求から消す。
+- **本体が全 API 要求に付けるヘッダ**(45/45): `x-twitter-active-user`、`x-twitter-auth-type`、`x-twitter-client-language`、`x-csrf-token`、`x-client-transaction-id`。ルートの無い要求には active-user と language が無かった。→ 同じ関数が API 宛て(`api.x.com`、`x.com/i/api`)に足す。language は呼び出し側の値(バンドル冒頭のフォロー用ヘルパーは `en` 固定)を上書きする。
+- **言語の値**: 本体は `session.language`(ページの `__INITIAL_STATE__`)を対応表に通して送る(`zh`→`zh-cn`、`zh-Hant`→`zh-tw`、`nb`→`no`、`ms`→`msa`、`fil`→`tl`、ほかはそのまま)。→ `readPageLoginUser` がページから読み、`localStorage.OTDaccountLanguage` に残す。読めるまではブラウザの言語(11 の実装)。
+- **CreateTweet の variables**: 本体の `sendTweet` は `tweet_text, card_uri, attachment_url, reply, batch_compose, geo, media, semantic_annotation_ids, conversation_control, …, disallowed_reply_options` の順で組み、`dark_request` はもう送らない(バンドル全体に文字列が無い)。→ 同じ順にし、`dark_request` を外した。`batch_mode` は legacy と本体で同じ値(`off` / `first` / `subsequent`)なので `first` も `BatchFirst` に写す。ツイート ID でない `in_reply_to_status_id` は本体と同じく捨てる。本文は `variables, features, queryId`(CreateTweet に fieldToggles は付かない)で、もとから同じ。
+- **CreateRetweet / DeleteRetweet / DeleteTweet**: 本体の variables は `{tweet_id}` / `{source_tweet_id}` / `{tweet_id}` だけ。→ `dark_request` を外した。FavoriteTweet はもとから同じ。
+- **`X-Client-UUID`**: 本体は `session.deviceId` があるときだけ送る(`bundle.LoggedInApiFilters`)。HAR の 45 件には 1 件も無い。OTD は x.com の IndexedDB(`device:rweb.dmCryptoKeys`)に ID が無いと乱数の UUID を作って送っていた。→ `src/challenge.js` は ID を作らない。鍵が無ければヘッダ無し(本体と同じ)、以前作った ID は消す。鍵がある場合に本体が今も送るかは未確認(従来どおり送る)。
+- **写した表の更新**: OTD 自身の読み取りコードを HAR のバンドルに対して動かし、24 操作中 23 操作を読んだ(`NotificationsTimeline` のチャンクは HAR に無く、10-25 の値のまま)。HAR 内の実要求(`HomeLatestTimeline` POST、`UsersByRestIds` GET 3 件)と ID・features の鍵と順序・値が一致。変わった ID: Home `IVA5…`、CreateTweet `l4hk8…`、TweetDetail、SearchTimeline、Likes、UserTweetsAndReplies、ListLatestTweetsTimeline、ListMembers、Bookmarks、CombinedLists、BlockedAccountsAll、MutedAccounts。features は `x_elections_post_context_enabled` が増えた(Home 系 42 鍵、CreateTweet 39 鍵)。ルートのハードコード ID と `HOME_TIMELINE_FEATURES` / `LIST_MEMBERS_FEATURES` も同じデプロイに揃えた。CreateTweet の features の退路は写した表から作る(11 で入れたリテラルは廃止)。
+- **セッション束縛(未対応、監視のみ)**: `bundle.LoggedInApiFilters` は switch `rweb_session_binding_enabled` が true のとき、CreateTweet / CreateNoteTweet / FavoriteTweet / UnfavoriteTweet / CreateRetweet / DeleteRetweet / CreateBookmark / DeleteBookmark / UserAccountLabel に `x-twitter-session-signature` / `-timestamp` / `-tokenhash` を付ける(署名は別チャンク 75415 の binder。401 と `x-tfe-auth-result-code: 3071` を見て再試行する)。2026-11-11 時点でこのアカウントは false(既定も false)。X が有効にすると、署名の無い書き込みは OTD のものだけになる。→ `noteSessionBinding` がページの switch を見て、true なら console に出し、1 日 1 回トーストで知らせる。署名の実装はしていない。
+
+HAR で分かったが手を付けていないもの:
+
+1. フォロー: 本体は `POST x.com/i/api/1.1/friendships/create.json` に `include_profile_interstitial_type=1&include_blocking=1&…&skip_status=1&user_id=<ID>`。legacy は `api.x.com` に `screen_name=<名前>` だけ。揃えるには ID の解決と open の保留が要る。実際の要求を HAR で見てから。
+2. v1.1 のホスト: 本体は `api.x.com` 宛てを `x.com/i/api` に書き換える(`responsive_web_api_transition_enabled`)。例外は `x-act-as-user-id` 付き(代理)と `/1.1/help/settings.json`、`/1.1/live_pipeline`、`/1.1/account`、`/1.1/attribution`、`/1.1/onboarding`、`/1.1/guest/activate.json`。legacy のルート無し要求はすべて `api.x.com` のまま。全体を書き換えると退役判定(`OTDretiredRest`)などに響くので未着手。
+3. メディア: 本体は `upload.x.com/i/media/upload.json`、legacy は `upload.x.com/1.1/media/upload.json`。INIT の引数も未確認。
+4. `x-twitter-active-user`: 本体はタブが背景のとき `no` を送る(HAR でも 1 件)。OTD は常に `yes`。背景のデッキが 24 時間「操作中」と申告している形になる。サーバ側の扱い(モバイルの通知抑制など)が読めないので、変えるかは未決。
+5. `timezone` ヘッダ(`responsive_web_timezone_header_enabled`、このアカウントは false)、`x-xp-forwarded-for`(バンドルに無い)は対応不要。
+
+次に要るもの: x.com 本体で投稿・いいね・フォロー・画像付き投稿を 1 回ずつ行った、切れていない HAR(DevTools の記録を操作の直前に消してから取ると小さくなる)。
+
 ### Phase 11 のテスト
 
-- `tests/write-routes.test.cjs`: 書き込みの言語ヘッダがブラウザの言語になること(navigator 無しは `en`)、CreateTweet の variables(`disallowed_reply_options`、tweetstorm 後続の `batch_compose`、通常の返信には付かないこと)、登録表 off のときの features が写した表と一致すること。
+- `tests/write-routes.test.cjs`(6 件): ルートの有無にかかわらず本体のヘッダになり TweetDeck の client version が出ないこと(アップロード先と他サイトの扱いも)、言語がページのアカウント言語(対応表つき)でそれまではブラウザの言語になること、CreateTweet の variables と順序(`dark_request` 無し、tweetstorm の `batch_compose`、引用、不正な返信先)、RT・RT 取消・削除・いいねの variables、登録表 off のときの ID と features が写した表と一致すること、セッション束縛の通知。
+- `tests/challenge.test.cjs`: デバイス ID は x.com のものだけを使い、作らないこと。
+- `node --test tests/*.test.cjs` は 160 件通過。
 
 ---
 

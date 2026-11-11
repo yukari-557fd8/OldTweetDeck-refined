@@ -9,11 +9,36 @@ const generateID = () => {
     return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 }
 
-// x.com sends the account's UI language in X-Twitter-Client-Language on every request. The
-// browser's language is the nearest a TweetDeck session has; "en" only when there is no navigator.
+// x.com sends the account's display language in X-Twitter-Client-Language on every API request:
+// session.language of its page state, through this map (main.js of 2026-11-11; "ja" on all 45
+// requests of that day's HAR). readPageLoginUser reads it from the page the registry fetches and
+// keeps it for the next start; until then the browser's language is the nearest there is.
+const X_LANGUAGE_HEADER = { ms: "msa", nb: "no", zh: "zh-cn", "zh-Hant": "zh-tw", "zh-hk": "zh-tw", fil: "tl" };
+const ACCOUNT_LANGUAGE_KEY = "OTDaccountLanguage";
+let pageLanguage = null;
 function clientLanguage() {
+    const account = pageLanguage || localStorage[ACCOUNT_LANGUAGE_KEY];
+    if (typeof account === "string" && account) return Object.hasOwn(X_LANGUAGE_HEADER, account) ? X_LANGUAGE_HEADER[account] : account;
     const lang = typeof navigator === "object" && navigator ? navigator.language : "";
     return (typeof lang === "string" && lang.split("-")[0]) || "en";
+}
+
+// What x.com's own client puts on every API request (45 of 45 in the HAR of 2026-11-11):
+// x-twitter-active-user and x-twitter-client-language. It never sends legacy's
+// X-Twitter-Client-Version ("Twitter-TweetDeck-blackbird-chrome/…", TD.net.ajax in bundle.js),
+// which every request without a route of its own still carried: follows, mutes, blocks, DMs.
+const X_HOST = /^https:\/\/(?:[\w-]+\.)*(?:x|twitter)\.com(?:[/:?#]|$)/;
+const X_API = /^https:\/\/(?:api\.(?:x|twitter)\.com\/|(?:x|twitter)\.com\/i\/api\/)/;
+function alignClientHeaders(xhr) {
+    const url = String(xhr.modUrl || "");
+    const headers = xhr.modReqHeaders;
+    if (!headers || !X_HOST.test(url)) return;
+    const drop = (wanted) => { for (const name of Object.keys(headers)) if (name.toLowerCase() === wanted) delete headers[name]; };
+    drop("x-twitter-client-version");
+    if (!X_API.test(url)) return;
+    if (getRequestHeader(xhr, "x-twitter-active-user") === undefined) headers["X-Twitter-Active-User"] = "yes";
+    drop("x-twitter-client-language");
+    headers["X-Twitter-Client-Language"] = clientLanguage();
 }
 
 let verifiedUser;
@@ -1908,11 +1933,11 @@ function latestTopCursor(feedKey) {
 // route. The features object is the one x.com shares across its timeline queries in this deploy.
 // These are the fallback: the GraphQL operations registry above replaces id and features with what
 // x.com's current bundles declare.
-const HOME_TIMELINE_FEATURES = {"rweb_video_screen_enabled":false,"rweb_cashtags_enabled":true,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"premium_content_api_read_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"responsive_web_jetfuel_frame":true,"rweb_sports_post_context_enabled":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_annotations_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"content_disclosure_indicator_enabled":true,"content_disclosure_ai_generated_indicator_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_grok_analysis_button_from_backend":true,"post_ctas_fetch_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_made_on_x_label_enabled":false,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"responsive_web_enhance_cards_enabled":false};
+const HOME_TIMELINE_FEATURES = {"rweb_video_screen_enabled":false,"rweb_cashtags_enabled":true,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"premium_content_api_read_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"responsive_web_jetfuel_frame":true,"rweb_sports_post_context_enabled":true,"x_elections_post_context_enabled":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_annotations_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"content_disclosure_indicator_enabled":true,"content_disclosure_ai_generated_indicator_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_grok_analysis_button_from_backend":true,"post_ctas_fetch_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_made_on_x_label_enabled":false,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"responsive_web_enhance_cards_enabled":false};
 function homeTimelineUrl(cursor) {
     const variables = { count: 40, includePromotedContent: true, enableRanking: false };
     if (cursor) variables.cursor = cursor;
-    return `${NEW_API}/KQPfcqQJJqF6M0D77p3JKw/HomeLatestTimeline?${generateParams(HOME_TIMELINE_FEATURES, variables, { withPayments: false })}`;
+    return `${NEW_API}/IVA5BUbeYPTrpYekQH7jiA/HomeLatestTimeline?${generateParams(HOME_TIMELINE_FEATURES, variables, { withPayments: false })}`;
 }
 
 const NOTIFICATIONS_ALL_URL = `https://${location.hostname}/i/api/2/notifications/all.json?include_profile_interstitial_type=1&include_blocking=1&include_blocked_by=1&include_followed_by=1&include_want_retweets=1&include_mute_edge=1&include_can_dm=1&include_can_media_tag=1&include_ext_has_nft_avatar=1&include_ext_is_blue_verified=1&include_ext_verified_type=1&include_ext_profile_image_shape=1&skip_status=1&cards_platform=Web-12&include_cards=1&include_ext_alt_text=true&include_ext_limited_action_results=true&include_quote_count=true&include_reply_count=1&tweet_mode=extended&include_ext_views=true&include_entities=true&include_user_entities=true&include_ext_media_color=true&include_ext_media_availability=true&include_ext_sensitive_media_warning=true&include_ext_trusted_friends_metadata=true&send_error_codes=true&simple_quoted_tweet=true&count=20&requestContext=launch&ext=mediaStats%2ChighlightedLabel%2ChasNftAvatar%2CvoiceInfo%2CbirdwatchPivot%2CsuperFollowMetadata%2CunmentionInfo%2CeditControl`;
@@ -2290,42 +2315,43 @@ const GRAPHQL_DECLARATION = /queryId:"([\w-]{22})",operationName:"(\w+)",operati
 // first 20 changed, and the routes' own ids and features below are older still. The console says when
 // this copy is behind x.com; `node tools/graphql-builtin.mjs <saved table>` prints a fresh one.
 const GRAPHQL_BUILTIN_KEYS = {
-    homeLatestTimeline: ["rweb_video_screen_enabled","rweb_cashtags_enabled","profile_label_improvements_pcf_label_in_post_enabled","responsive_web_profile_redirect_enabled","rweb_tipjar_consumption_enabled","verified_phone_label_enabled","creator_subscriptions_tweet_preview_api_enabled","responsive_web_graphql_timeline_navigation_enabled","premium_content_api_read_enabled","communities_web_enable_tweet_community_results_fetch","c9s_tweet_anatomy_moderator_badge_enabled","responsive_web_grok_analyze_button_fetch_trends_enabled","responsive_web_grok_analyze_post_followups_enabled","rweb_cashtags_composer_attachment_enabled","responsive_web_jetfuel_frame","rweb_sports_post_context_enabled","responsive_web_grok_share_attachment_enabled","responsive_web_grok_annotations_enabled","articles_preview_enabled","responsive_web_edit_tweet_api_enabled","rweb_conversational_replies_downvote_enabled","graphql_is_translatable_rweb_tweet_is_translatable_enabled","view_counts_everywhere_api_enabled","longform_notetweets_consumption_enabled","responsive_web_twitter_article_tweet_consumption_enabled","content_disclosure_indicator_enabled","content_disclosure_ai_generated_indicator_enabled","responsive_web_grok_show_grok_translated_post","responsive_web_grok_analysis_button_from_backend","post_ctas_fetch_enabled","freedom_of_speech_not_reach_fetch_enabled","standardized_nudges_misinfo","tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled","longform_notetweets_rich_text_read_enabled","longform_notetweets_inline_media_enabled","responsive_web_nested_quote_preview_enabled","responsive_web_grok_image_annotation_enabled","responsive_web_grok_imagine_annotation_enabled","responsive_web_made_on_x_label_enabled","responsive_web_grok_community_note_auto_translation_is_enabled","responsive_web_enhance_cards_enabled"],
-    createTweet: ["premium_content_api_read_enabled","communities_web_enable_tweet_community_results_fetch","c9s_tweet_anatomy_moderator_badge_enabled","responsive_web_grok_analyze_button_fetch_trends_enabled","responsive_web_grok_analyze_post_followups_enabled","rweb_cashtags_composer_attachment_enabled","responsive_web_jetfuel_frame","rweb_sports_post_context_enabled","responsive_web_grok_share_attachment_enabled","responsive_web_grok_annotations_enabled","responsive_web_edit_tweet_api_enabled","rweb_conversational_replies_downvote_enabled","graphql_is_translatable_rweb_tweet_is_translatable_enabled","view_counts_everywhere_api_enabled","longform_notetweets_consumption_enabled","responsive_web_twitter_article_tweet_consumption_enabled","content_disclosure_indicator_enabled","content_disclosure_ai_generated_indicator_enabled","responsive_web_grok_show_grok_translated_post","responsive_web_grok_analysis_button_from_backend","post_ctas_fetch_enabled","longform_notetweets_rich_text_read_enabled","longform_notetweets_inline_media_enabled","profile_label_improvements_pcf_label_in_post_enabled","responsive_web_profile_redirect_enabled","rweb_tipjar_consumption_enabled","verified_phone_label_enabled","responsive_web_nested_quote_preview_enabled","articles_preview_enabled","rweb_cashtags_enabled","responsive_web_grok_community_note_auto_translation_is_enabled","freedom_of_speech_not_reach_fetch_enabled","standardized_nudges_misinfo","tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled","responsive_web_grok_image_annotation_enabled","responsive_web_grok_imagine_annotation_enabled","responsive_web_made_on_x_label_enabled","responsive_web_graphql_timeline_navigation_enabled"],
+    homeLatestTimeline: ["rweb_video_screen_enabled","rweb_cashtags_enabled","profile_label_improvements_pcf_label_in_post_enabled","responsive_web_profile_redirect_enabled","rweb_tipjar_consumption_enabled","verified_phone_label_enabled","creator_subscriptions_tweet_preview_api_enabled","responsive_web_graphql_timeline_navigation_enabled","premium_content_api_read_enabled","communities_web_enable_tweet_community_results_fetch","c9s_tweet_anatomy_moderator_badge_enabled","responsive_web_grok_analyze_button_fetch_trends_enabled","responsive_web_grok_analyze_post_followups_enabled","rweb_cashtags_composer_attachment_enabled","responsive_web_jetfuel_frame","rweb_sports_post_context_enabled","x_elections_post_context_enabled","responsive_web_grok_share_attachment_enabled","responsive_web_grok_annotations_enabled","articles_preview_enabled","responsive_web_edit_tweet_api_enabled","rweb_conversational_replies_downvote_enabled","graphql_is_translatable_rweb_tweet_is_translatable_enabled","view_counts_everywhere_api_enabled","longform_notetweets_consumption_enabled","responsive_web_twitter_article_tweet_consumption_enabled","content_disclosure_indicator_enabled","content_disclosure_ai_generated_indicator_enabled","responsive_web_grok_show_grok_translated_post","responsive_web_grok_analysis_button_from_backend","post_ctas_fetch_enabled","freedom_of_speech_not_reach_fetch_enabled","standardized_nudges_misinfo","tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled","longform_notetweets_rich_text_read_enabled","longform_notetweets_inline_media_enabled","responsive_web_nested_quote_preview_enabled","responsive_web_grok_image_annotation_enabled","responsive_web_grok_imagine_annotation_enabled","responsive_web_made_on_x_label_enabled","responsive_web_grok_community_note_auto_translation_is_enabled","responsive_web_enhance_cards_enabled"],
+    notificationsTimeline: ["rweb_video_screen_enabled","rweb_cashtags_enabled","profile_label_improvements_pcf_label_in_post_enabled","responsive_web_profile_redirect_enabled","rweb_tipjar_consumption_enabled","verified_phone_label_enabled","creator_subscriptions_tweet_preview_api_enabled","responsive_web_graphql_timeline_navigation_enabled","premium_content_api_read_enabled","communities_web_enable_tweet_community_results_fetch","c9s_tweet_anatomy_moderator_badge_enabled","responsive_web_grok_analyze_button_fetch_trends_enabled","responsive_web_grok_analyze_post_followups_enabled","rweb_cashtags_composer_attachment_enabled","responsive_web_jetfuel_frame","rweb_sports_post_context_enabled","responsive_web_grok_share_attachment_enabled","responsive_web_grok_annotations_enabled","articles_preview_enabled","responsive_web_edit_tweet_api_enabled","rweb_conversational_replies_downvote_enabled","graphql_is_translatable_rweb_tweet_is_translatable_enabled","view_counts_everywhere_api_enabled","longform_notetweets_consumption_enabled","responsive_web_twitter_article_tweet_consumption_enabled","content_disclosure_indicator_enabled","content_disclosure_ai_generated_indicator_enabled","responsive_web_grok_show_grok_translated_post","responsive_web_grok_analysis_button_from_backend","post_ctas_fetch_enabled","freedom_of_speech_not_reach_fetch_enabled","standardized_nudges_misinfo","tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled","longform_notetweets_rich_text_read_enabled","longform_notetweets_inline_media_enabled","responsive_web_nested_quote_preview_enabled","responsive_web_grok_image_annotation_enabled","responsive_web_grok_imagine_annotation_enabled","responsive_web_made_on_x_label_enabled","responsive_web_grok_community_note_auto_translation_is_enabled","responsive_web_enhance_cards_enabled"],
+    createTweet: ["premium_content_api_read_enabled","communities_web_enable_tweet_community_results_fetch","c9s_tweet_anatomy_moderator_badge_enabled","responsive_web_grok_analyze_button_fetch_trends_enabled","responsive_web_grok_analyze_post_followups_enabled","rweb_cashtags_composer_attachment_enabled","responsive_web_jetfuel_frame","rweb_sports_post_context_enabled","x_elections_post_context_enabled","responsive_web_grok_share_attachment_enabled","responsive_web_grok_annotations_enabled","responsive_web_edit_tweet_api_enabled","rweb_conversational_replies_downvote_enabled","graphql_is_translatable_rweb_tweet_is_translatable_enabled","view_counts_everywhere_api_enabled","longform_notetweets_consumption_enabled","responsive_web_twitter_article_tweet_consumption_enabled","content_disclosure_indicator_enabled","content_disclosure_ai_generated_indicator_enabled","responsive_web_grok_show_grok_translated_post","responsive_web_grok_analysis_button_from_backend","post_ctas_fetch_enabled","longform_notetweets_rich_text_read_enabled","longform_notetweets_inline_media_enabled","profile_label_improvements_pcf_label_in_post_enabled","responsive_web_profile_redirect_enabled","rweb_tipjar_consumption_enabled","verified_phone_label_enabled","responsive_web_nested_quote_preview_enabled","articles_preview_enabled","rweb_cashtags_enabled","responsive_web_grok_community_note_auto_translation_is_enabled","freedom_of_speech_not_reach_fetch_enabled","standardized_nudges_misinfo","tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled","responsive_web_grok_image_annotation_enabled","responsive_web_grok_imagine_annotation_enabled","responsive_web_made_on_x_label_enabled","responsive_web_graphql_timeline_navigation_enabled"],
     userByRestId: ["hidden_profile_subscriptions_enabled","profile_label_improvements_pcf_label_in_post_enabled","responsive_web_profile_redirect_enabled","rweb_tipjar_consumption_enabled","verified_phone_label_enabled","highlights_tweets_tab_ui_enabled","responsive_web_twitter_article_notes_tab_enabled","subscriptions_feature_can_gift_premium","creator_subscriptions_tweet_preview_api_enabled","responsive_web_graphql_timeline_navigation_enabled"],
     userByScreenName: ["hidden_profile_subscriptions_enabled","profile_label_improvements_pcf_label_in_post_enabled","responsive_web_profile_redirect_enabled","rweb_tipjar_consumption_enabled","verified_phone_label_enabled","subscriptions_verification_info_is_identity_verified_enabled","subscriptions_verification_info_verified_since_enabled","highlights_tweets_tab_ui_enabled","responsive_web_twitter_article_notes_tab_enabled","subscriptions_feature_can_gift_premium","creator_subscriptions_tweet_preview_api_enabled","responsive_web_graphql_timeline_navigation_enabled"],
     usersByRestIds: ["profile_label_improvements_pcf_label_in_post_enabled","responsive_web_profile_redirect_enabled","rweb_tipjar_consumption_enabled","verified_phone_label_enabled","responsive_web_graphql_timeline_navigation_enabled"],
 };
 const GRAPHQL_BUILTIN = {
-    date: "2026-10-25",
-    main: "https://abs.twimg.com/responsive-web/client-web/main.a8ff362f9b84a869a.js",
+    date: "2026-11-11",
+    main: "https://abs.twimg.com/responsive-web/client-web/main.b7fce08cdef7f9f8a.js",
     ops: {
-        HomeLatestTimeline: { id: "KQPfcqQJJqF6M0D77p3JKw", features: "homeLatestTimeline", chunk: "shared~bundle.Compose~bundle.HomeTimeline~bundle.LoggedInMain" },
-        NotificationsTimeline: { id: "MSIb-PAcnu9OBUe56f_DHQ", features: "homeLatestTimeline", chunk: "bundle.Notifications" },
-        CreateTweet: { id: "5CVj-J0FZWyGgJpcjeBJEA", features: "createTweet", chunk: "main" },
+        HomeLatestTimeline: { id: "IVA5BUbeYPTrpYekQH7jiA", features: "homeLatestTimeline", chunk: "shared~bundle.Compose~bundle.HomeTimeline~bundle.LoggedInMain" },
+        NotificationsTimeline: { id: "MSIb-PAcnu9OBUe56f_DHQ", features: "notificationsTimeline", chunk: "bundle.Notifications" },
+        CreateTweet: { id: "l4hk8uVGvR-a8kzQ4nOhPA", features: "createTweet", chunk: "main" },
         CreateRetweet: { id: "mbRO74GrOvSfRcJnlMapnQ", features: [], chunk: "main" },
         DeleteRetweet: { id: "ZyZigVsNiFO6v1dEks1eWg", features: [], chunk: "main" },
         DeleteTweet: { id: "nxpZCY2K-I6QoFHAHeojFQ", features: [], chunk: "main" },
         FavoriteTweet: { id: "lI07N6Otwv1PhnEgXILM7A", features: [], chunk: "main" },
         UnfavoriteTweet: { id: "ZYKSe-w7KEslx3JhSIk5LA", features: [], chunk: "main" },
-        TweetDetail: { id: "gJoREC4Bspo4kJ0ax9C3sQ", features: "homeLatestTimeline", chunk: "main" },
-        SearchTimeline: { id: "f7SuGIm11eLbQs7c0K9X9w", features: "homeLatestTimeline", chunk: "main" },
-        Likes: { id: "mzOgReEsktOIIXzWkqf0ig", features: "homeLatestTimeline", chunk: "main" },
-        UserTweetsAndReplies: { id: "MbxTcSWPt8RWRFMwenOtyQ", features: "homeLatestTimeline", chunk: "main" },
+        TweetDetail: { id: "dQDdKtt882nl-Km98FJGSQ", features: "homeLatestTimeline", chunk: "main" },
+        SearchTimeline: { id: "vLHjqbDv7TPFMBkIIO1nOA", features: "homeLatestTimeline", chunk: "main" },
+        Likes: { id: "ZjyvI1V9gajq5eclHCObzA", features: "homeLatestTimeline", chunk: "main" },
+        UserTweetsAndReplies: { id: "FmuxExUC21Xn_C2NwtX5sQ", features: "homeLatestTimeline", chunk: "main" },
         UserByRestId: { id: "mxaYWwt52eAb6OAzYHMVzg", features: "userByRestId", chunk: "main" },
         UserByScreenName: { id: "AMIBMjtxEEATh4z8V9GtRg", features: "userByScreenName", chunk: "main" },
         UsersByRestIds: { id: "ubfbnAM4qTlMTOYleYhXSg", features: "usersByRestIds", chunk: "main" },
-        ListLatestTweetsTimeline: { id: "uV0pbd0DrW8hTbMrtZ1SYQ", features: "homeLatestTimeline", chunk: "shared~JetfuelWrapper~bundle.AudioSpaceDetail~bundle.AudioSpaceDiscovery~bundle.AudioSpacebarScreen~bundle.Bi" },
-        ListMembers: { id: "fFCNliJG5Gq4yEnINo6-1A", features: "homeLatestTimeline", chunk: "shared~JetfuelWrapper~bundle.AudioSpaceDetail~bundle.AudioSpaceDiscovery~bundle.AudioSpacebarScreen~bundle.Bi" },
+        ListLatestTweetsTimeline: { id: "UMc_lPEeKz_WiKSY8ZT7yw", features: "homeLatestTimeline", chunk: "shared~JetfuelWrapper~bundle.AudioSpaceDetail~bundle.AudioSpaceDiscovery~bundle.AudioSpacebarScreen~bundle.Bi" },
+        ListMembers: { id: "vgA6FHTOKJQ1rJ7iiHc0xw", features: "homeLatestTimeline", chunk: "shared~JetfuelWrapper~bundle.AudioSpaceDetail~bundle.AudioSpaceDiscovery~bundle.AudioSpacebarScreen~bundle.Bi" },
         ListAddMember: { id: "-Kf1YVC1rNKkPvPFk7YXZw", features: "usersByRestIds", chunk: "shared~JetfuelWrapper~bundle.AudioSpaceDetail~bundle.AudioSpaceDiscovery~bundle.AudioSpacebarScreen~bundle.Bi" },
         ListRemoveMember: { id: "_2o1-wSMWGFSi5HUscn1Hw", features: "usersByRestIds", chunk: "shared~JetfuelWrapper~bundle.AudioSpaceDetail~bundle.AudioSpaceDiscovery~bundle.AudioSpacebarScreen~bundle.Bi" },
-        Bookmarks: { id: "zFGFGLIm1akEv8PE3uut8w", features: "homeLatestTimeline", chunk: "shared~bundle.Birdwatch~bundle.Compose~bundle.Display~bundle.Grok~bundle.GrokDrawer~bundle.News~bundle.Ocf~bu" },
-        CombinedLists: { id: "60iDk55u-rTx1qB8KQMZKw", features: "homeLatestTimeline", chunk: "shared~JetfuelWrapper~bundle.AudioSpaceDetail~bundle.AudioSpaceDiscovery~bundle.AudioSpacebarScreen~bundle.Bi" },
-        BlockedAccountsAll: { id: "jNDoO-7f4EPnrF3PvSy2XQ", features: "homeLatestTimeline", chunk: "main" },
-        MutedAccounts: { id: "Sc8HpW2C7W_mOM0rvJJNhg", features: "homeLatestTimeline", chunk: "main" },
+        Bookmarks: { id: "fjf5b5Lu82lYMSBRhppK2g", features: "homeLatestTimeline", chunk: "shared~bundle.Birdwatch~bundle.Compose~bundle.Display~bundle.Grok~bundle.GrokDrawer~bundle.News~bundle.Ocf~bu" },
+        CombinedLists: { id: "r4OjZGZWNqdV6smWr30C3w", features: "homeLatestTimeline", chunk: "shared~JetfuelWrapper~bundle.AudioSpaceDetail~bundle.AudioSpaceDiscovery~bundle.AudioSpacebarScreen~bundle.Bi" },
+        BlockedAccountsAll: { id: "exDAeZuprdrqzXJu4UiNUQ", features: "homeLatestTimeline", chunk: "main" },
+        MutedAccounts: { id: "1heSSJ80TWeDGtoR7-X-iA", features: "homeLatestTimeline", chunk: "main" },
         ConversationControlChange: { id: "JWeo7tCAhI_HwcuPcL4JrQ", features: [], chunk: "main" },
     },
-    values: {"articles_preview_enabled":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"communities_web_enable_tweet_community_results_fetch":true,"content_disclosure_ai_generated_indicator_enabled":true,"content_disclosure_indicator_enabled":true,"creator_subscriptions_tweet_preview_api_enabled":true,"freedom_of_speech_not_reach_fetch_enabled":true,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"hidden_profile_subscriptions_enabled":true,"highlights_tweets_tab_ui_enabled":true,"longform_notetweets_consumption_enabled":true,"longform_notetweets_inline_media_enabled":false,"longform_notetweets_rich_text_read_enabled":true,"post_ctas_fetch_enabled":false,"premium_content_api_read_enabled":false,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"responsive_web_enhance_cards_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true,"responsive_web_grok_analysis_button_from_backend":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"responsive_web_grok_annotations_enabled":true,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_jetfuel_frame":true,"responsive_web_made_on_x_label_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"responsive_web_profile_redirect_enabled":true,"responsive_web_twitter_article_notes_tab_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"rweb_cashtags_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"rweb_sports_post_context_enabled":false,"rweb_tipjar_consumption_enabled":false,"rweb_video_screen_enabled":false,"standardized_nudges_misinfo":true,"subscriptions_feature_can_gift_premium":false,"subscriptions_verification_info_is_identity_verified_enabled":true,"subscriptions_verification_info_verified_since_enabled":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"verified_phone_label_enabled":false,"view_counts_everywhere_api_enabled":true},
+    values: {"articles_preview_enabled":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"communities_web_enable_tweet_community_results_fetch":true,"content_disclosure_ai_generated_indicator_enabled":true,"content_disclosure_indicator_enabled":true,"creator_subscriptions_tweet_preview_api_enabled":true,"freedom_of_speech_not_reach_fetch_enabled":true,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"hidden_profile_subscriptions_enabled":true,"highlights_tweets_tab_ui_enabled":true,"longform_notetweets_consumption_enabled":true,"longform_notetweets_inline_media_enabled":false,"longform_notetweets_rich_text_read_enabled":true,"post_ctas_fetch_enabled":false,"premium_content_api_read_enabled":false,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"responsive_web_enhance_cards_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true,"responsive_web_grok_analysis_button_from_backend":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"responsive_web_grok_annotations_enabled":true,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_jetfuel_frame":true,"responsive_web_made_on_x_label_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"responsive_web_profile_redirect_enabled":true,"responsive_web_twitter_article_notes_tab_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"rweb_cashtags_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"rweb_sports_post_context_enabled":true,"rweb_tipjar_consumption_enabled":false,"rweb_video_screen_enabled":false,"standardized_nudges_misinfo":true,"subscriptions_feature_can_gift_premium":false,"subscriptions_verification_info_is_identity_verified_enabled":true,"subscriptions_verification_info_verified_since_enabled":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"verified_phone_label_enabled":false,"view_counts_everywhere_api_enabled":true,"x_elections_post_context_enabled":true},
 };
 
 function builtinGraphqlTable() {
@@ -2710,11 +2736,32 @@ function readPageLoginUser() {
         const id = state?.session?.user_id;
         const user = id ? state?.entities?.users?.entities?.[id] : null;
         if (user?.id_str && user.screen_name) pageLoginUser = user;
+        const language = state?.session?.language;
+        if (typeof language === "string" && language) {
+            pageLanguage = language;
+            localStorage[ACCOUNT_LANGUAGE_KEY] = language;
+        }
+        noteSessionBinding(state?.featureSwitch?.user?.config);
         return pageLoginUser;
     }).catch((e) => {
         console.warn("OldTweetDeck: could not read the login account from x.com's page", e);
         return null;
     });
+}
+
+// x.com can sign its own posts, likes, retweets and bookmarks (bundle.LoggedInApiFilters of
+// 2026-11-11: x-twitter-session-signature / -timestamp / -tokenhash on CreateTweet, FavoriteTweet,
+// CreateRetweet, DeleteRetweet, CreateBookmark, …, behind the switch rweb_session_binding_enabled,
+// off by default that day). TweetDeck's writes carry no signature, so once X turns the switch on
+// for an account they are the only unsigned ones it receives: say so, once a day.
+function noteSessionBinding(config) {
+    if (config?.rweb_session_binding_enabled?.value !== true) return;
+    console.warn("OldTweetDeck: x.com signs posts, likes and retweets for this account now (rweb_session_binding_enabled); TweetDeck's are sent unsigned");
+    const noticedAt = Number(localStorage.OTDsessionBindingNoticedAt) || 0;
+    if (Date.now() - noticedAt <= 24 * 60 * 60 * 1000) return;
+    localStorage.OTDsessionBindingNoticedAt = String(Date.now());
+    toastWhenReady("X now signs posts, likes and reposts made on x.com for this account. TweetDeck cannot sign its own, so X can tell them apart: "
+        + "post, like and repost on x.com to stay safe.");
 }
 
 function cookieUserId() {
@@ -3083,7 +3130,7 @@ const screenNameIds = {};
 const USER_BY_SCREEN_NAME_FEATURES = {"hidden_profile_subscriptions_enabled":true,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"subscriptions_verification_info_is_identity_verified_enabled":true,"subscriptions_verification_info_verified_since_enabled":true,"highlights_tweets_tab_ui_enabled":true,"responsive_web_twitter_article_notes_tab_enabled":true,"subscriptions_feature_can_gift_premium":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true};
 const USER_BY_REST_ID_FEATURES = {"hidden_profile_subscriptions_enabled":true,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"highlights_tweets_tab_ui_enabled":true,"responsive_web_twitter_article_notes_tab_enabled":true,"subscriptions_feature_can_gift_premium":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true};
 const LIST_MEMBER_MUTATION_FEATURES = {"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true};
-const LIST_MEMBERS_FEATURES = {"rweb_video_screen_enabled":false,"rweb_cashtags_enabled":true,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"premium_content_api_read_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"responsive_web_jetfuel_frame":true,"rweb_sports_post_context_enabled":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_annotations_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"content_disclosure_indicator_enabled":true,"content_disclosure_ai_generated_indicator_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_grok_analysis_button_from_backend":true,"post_ctas_fetch_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"responsive_web_enhance_cards_enabled":false};
+const LIST_MEMBERS_FEATURES = {"rweb_video_screen_enabled":false,"rweb_cashtags_enabled":true,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"premium_content_api_read_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"responsive_web_jetfuel_frame":true,"rweb_sports_post_context_enabled":true,"x_elections_post_context_enabled":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_annotations_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"content_disclosure_indicator_enabled":true,"content_disclosure_ai_generated_indicator_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_grok_analysis_button_from_backend":true,"post_ctas_fetch_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_made_on_x_label_enabled":false,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"responsive_web_enhance_cards_enabled":false};
 
 function rememberUser(user) {
     if (user && user.screen_name && user.id_str) {
@@ -3488,7 +3535,7 @@ const proxyRoutes = [
                 }
                 variables.listId = list_id;
                 xhr.storage.list_id = list_id;
-                xhr.modUrl = `${NEW_API}/uV0pbd0DrW8hTbMrtZ1SYQ/ListLatestTweetsTimeline?${generateParams(
+                xhr.modUrl = `${NEW_API}/UMc_lPEeKz_WiKSY8ZT7yw/ListLatestTweetsTimeline?${generateParams(
                     features,
                     variables
                 )}`;
@@ -3660,7 +3707,7 @@ const proxyRoutes = [
                 }
                 xhr.storage.user_id = variables.userId;
 
-                xhr.modUrl = `${NEW_API}/MbxTcSWPt8RWRFMwenOtyQ/UserTweetsAndReplies?${generateParams(
+                xhr.modUrl = `${NEW_API}/FmuxExUC21Xn_C2NwtX5sQ/UserTweetsAndReplies?${generateParams(
                     features,
                     variables
                 )}`;
@@ -3824,7 +3871,7 @@ const proxyRoutes = [
             if (bn && bookmarkTimes[`${user_id}:${bn}`] !== undefined) {
                 xhr.storage.time = bookmarkTimes[`${user_id}:${bn}`];
             }
-            xhr.modUrl = `${NEW_API}/zFGFGLIm1akEv8PE3uut8w/Bookmarks?${generateParams(
+            xhr.modUrl = `${NEW_API}/fjf5b5Lu82lYMSBRhppK2g/Bookmarks?${generateParams(
                 xhr.storage.features,
                 xhr.storage.variables
             )}`;
@@ -4215,7 +4262,7 @@ const proxyRoutes = [
                 }
                 xhr.storage.user_id = variables.userId;
 
-                xhr.modUrl = `${NEW_API}/mzOgReEsktOIIXzWkqf0ig/Likes?${generateParams(
+                xhr.modUrl = `${NEW_API}/ZjyvI1V9gajq5eclHCObzA/Likes?${generateParams(
                     features,
                     variables
                 )}`;
@@ -4421,7 +4468,7 @@ const proxyRoutes = [
                 const variables = { listId: params.get("list_id"), count };
                 const cursor = params.get("cursor");
                 if (cursor && cursor !== "-1" && cursor !== "0") variables.cursor = cursor;
-                xhr.modUrl = `${NEW_API}/fFCNliJG5Gq4yEnINo6-1A/ListMembers?${generateParams(
+                xhr.modUrl = `${NEW_API}/vgA6FHTOKJQ1rJ7iiHc0xw/ListMembers?${generateParams(
                     LIST_MEMBERS_FEATURES,
                     variables
                 )}`;
@@ -4523,7 +4570,7 @@ const proxyRoutes = [
 
                 xhr.storage.query = variables.rawQuery;
                 xhr.storage.cursor = params.get("since_id");
-                xhr.modUrl = `${NEW_API}/f7SuGIm11eLbQs7c0K9X9w/SearchTimeline?${generateParams(
+                xhr.modUrl = `${NEW_API}/vLHjqbDv7TPFMBkIIO1nOA/SearchTimeline?${generateParams(
                     features,
                     variables
                 )}`;
@@ -4659,7 +4706,7 @@ const proxyRoutes = [
                     responsive_web_enhance_cards_enabled: false,
                 };
 
-                xhr.modUrl = `${NEW_API}/f7SuGIm11eLbQs7c0K9X9w/SearchTimeline?${generateParams(
+                xhr.modUrl = `${NEW_API}/vLHjqbDv7TPFMBkIIO1nOA/SearchTimeline?${generateParams(
                     features,
                     variables
                 )}`;
@@ -4733,7 +4780,7 @@ const proxyRoutes = [
         path: "/1.1/statuses/update.json",
         method: "POST",
         beforeRequest: (xhr) => {
-            xhr.modUrl = `https://${location.hostname}/i/api/graphql/5CVj-J0FZWyGgJpcjeBJEA/CreateTweet`;
+            xhr.modUrl = `https://${location.hostname}/i/api/graphql/l4hk8uVGvR-a8kzQ4nOhPA/CreateTweet`;
         },
         beforeSendHeaders: (xhr) => {
             xhr.modReqHeaders["Content-Type"] = "application/json";
@@ -4744,46 +4791,35 @@ const proxyRoutes = [
         },
         beforeSendBody: (xhr, body) => {
             let params = Object.fromEntries(new URLSearchParams(body));
-            // x.com's CreateTweet variables: disallowed_reply_options always travels (null unless the
-            // composer restricted replies), and the later tweets of a thread carry batch_compose.
-            // Legacy sends each tweet of a "tweetstorm" on its own, the follow-ups as replies with
-            // batch_mode=subsequent; the first one goes out before the thread exists, so x.com's
-            // BatchFirst has nothing to map to.
-            let variables = {
-                tweet_text: params.status,
-                media: {
-                    media_entities: [],
-                    possibly_sensitive: false,
-                },
-                semantic_annotation_ids: [],
-                disallowed_reply_options: null,
-                dark_request: false,
-            };
-            if (params.in_reply_to_status_id) {
+            // x.com's own variables (sendTweet in main.js of 2026-11-11), in its key order:
+            // tweet_text, attachment_url, reply, batch_compose, media, semantic_annotation_ids and
+            // disallowed_reply_options (null unless the composer restricted replies). It sends no
+            // dark_request any more. Legacy's batch_mode has x.com's values: a "tweetstorm" goes
+            // out one tweet at a time, the follow-ups as replies with batch_mode=subsequent.
+            const variables = { tweet_text: params.status };
+            if (params.attachment_url) variables.attachment_url = params.attachment_url;
+            if (/^[1-9]\d*$/.test(params.in_reply_to_status_id || "")) {
                 variables.reply = {
                     in_reply_to_tweet_id: params.in_reply_to_status_id,
-                    exclude_reply_user_ids: [],
+                    exclude_reply_user_ids: params.exclude_reply_user_ids ? params.exclude_reply_user_ids.split(",") : [],
                 };
-                if (params.exclude_reply_user_ids) {
-                    variables.reply.exclude_reply_user_ids =
-                        params.exclude_reply_user_ids.split(",");
-                }
-                if (params.batch_mode === "subsequent") variables.batch_compose = "BatchSubsequent";
             }
-            if (params.media_ids) {
-                variables.media.media_entities = params.media_ids
-                    .split(",")
-                    .map((id) => ({ media_id: id, tagged_users: [] }));
-            }
-            if (params.attachment_url) {
-                variables.attachment_url = params.attachment_url;
-            }
+            const batch = { first: "BatchFirst", subsequent: "BatchSubsequent" };
+            if (Object.hasOwn(batch, params.batch_mode)) variables.batch_compose = batch[params.batch_mode];
+            variables.media = {
+                media_entities: params.media_ids ? params.media_ids.split(",").map((id) => ({ media_id: id, tagged_users: [] })) : [],
+                possibly_sensitive: false,
+            };
+            variables.semantic_annotation_ids = [];
+            variables.disallowed_reply_options = null;
 
+            // the registry replaces features and queryId with what x.com's bundles declare now;
+            // these are the built-in table's, for when it is off
+            const builtin = builtinGraphqlTable();
             return JSON.stringify({
                 variables,
-                // the fallback when the registry is off: x.com's list of 2026-10-25 (GRAPHQL_BUILTIN)
-                features: {"premium_content_api_read_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"responsive_web_jetfuel_frame":true,"rweb_sports_post_context_enabled":false,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_annotations_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"content_disclosure_indicator_enabled":true,"content_disclosure_ai_generated_indicator_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_grok_analysis_button_from_backend":true,"post_ctas_fetch_enabled":false,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":false,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"articles_preview_enabled":true,"rweb_cashtags_enabled":true,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_made_on_x_label_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true},
-                queryId: "5CVj-J0FZWyGgJpcjeBJEA",
+                features: graphqlFeaturesFor(builtin.ops.CreateTweet, builtin),
+                queryId: "l4hk8uVGvR-a8kzQ4nOhPA",
             });
         },
         afterRequest: (xhr) => {
@@ -4830,10 +4866,7 @@ const proxyRoutes = [
         },
         beforeSendBody: (xhr, body) => {
             return JSON.stringify({
-                variables: {
-                    tweet_id: xhr.storage.tweet_id,
-                    dark_request: false,
-                },
+                variables: { tweet_id: xhr.storage.tweet_id },
                 queryId: "mbRO74GrOvSfRcJnlMapnQ",
             });
         },
@@ -4884,7 +4917,7 @@ const proxyRoutes = [
         },
         beforeSendBody: (xhr, body) => {
             return JSON.stringify({
-                variables: { source_tweet_id: xhr.storage.tweet_id, dark_request: false },
+                variables: { source_tweet_id: xhr.storage.tweet_id },
                 queryId: "ZyZigVsNiFO6v1dEks1eWg",
             });
         },
@@ -4919,7 +4952,7 @@ const proxyRoutes = [
             xhr.storage.tweet_id = originalUrl.pathname.match(
                 /\/1.1\/statuses\/show\/(\d+).json/
             )[1];
-            xhr.modUrl = `https://${location.hostname}/i/api/graphql/gJoREC4Bspo4kJ0ax9C3sQ/TweetDetail?variables=${encodeURIComponent(
+            xhr.modUrl = `https://${location.hostname}/i/api/graphql/dQDdKtt882nl-Km98FJGSQ/TweetDetail?variables=${encodeURIComponent(
                 JSON.stringify({
                     focalTweetId: xhr.storage.tweet_id,
                     with_rux_injections: false,
@@ -4991,7 +5024,7 @@ const proxyRoutes = [
         beforeRequest: (xhr) => {
             let originalUrl = new URL(xhr.originalUrl);
             xhr.storage.tweet_id = originalUrl.searchParams.get("id");
-            xhr.modUrl = `https://${location.hostname}/i/api/graphql/gJoREC4Bspo4kJ0ax9C3sQ/TweetDetail?variables=${encodeURIComponent(
+            xhr.modUrl = `https://${location.hostname}/i/api/graphql/dQDdKtt882nl-Km98FJGSQ/TweetDetail?variables=${encodeURIComponent(
                 JSON.stringify({
                     focalTweetId: xhr.storage.tweet_id,
                     with_rux_injections: false,
@@ -5078,7 +5111,7 @@ const proxyRoutes = [
         },
         beforeSendBody: (xhr, body) => {
             return JSON.stringify({
-                variables: { tweet_id: xhr.storage.tweet_id, dark_request: false },
+                variables: { tweet_id: xhr.storage.tweet_id },
                 queryId: "nxpZCY2K-I6QoFHAHeojFQ",
             });
         },
@@ -5671,6 +5704,7 @@ XMLHttpRequest = function () {
             if (this.proxyRoute && this.proxyRoute.beforeSendHeaders) {
                 this.proxyRoute.beforeSendHeaders(this);
             }
+            alignClientHeaders(this);
             try {
                 for (const [name, value] of Object.entries(this.modReqHeaders)) {
                     this.setRequestHeader(name, value);

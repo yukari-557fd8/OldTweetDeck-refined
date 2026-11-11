@@ -97,8 +97,8 @@ async function send(context, method, url, body = null, headers = { 'x-act-as-use
     return xhr;
 }
 const HOME = 'https://api.x.com/1.1/statuses/home_timeline.json?count=40';
-// the route's own id (2026-10-24); the fixtures declare a made-up newer one
-const HOME_FALLBACK = '/graphql/KQPfcqQJJqF6M0D77p3JKw/HomeLatestTimeline?';
+// the route's own id (2026-11-11); the fixtures declare a made-up newer one
+const HOME_FALLBACK = '/graphql/IVA5BUbeYPTrpYekQH7jiA/HomeLatestTimeline?';
 
 test("reads the operations x.com's bundles declare, trying the chunks a hint names until one has them", async () => {
     const localStorage = {};
@@ -234,7 +234,7 @@ test("when the page cannot be read the saved table still applies; without one, t
     assert.deepEqual(plain(vm.runInContext('GRAPHQL_STARTUP_WAIT', bare)), { within: 15000, atMost: 4000, firstRun: 10000 });
     const url = new URL((await send(bare, 'GET', HOME)).opens.at(-1));
     assert.equal(url.pathname, `/i/api/graphql/${table.ops.HomeLatestTimeline.id}/HomeLatestTimeline`);
-    assert.equal(table.ops.HomeLatestTimeline.features.length, 41);
+    assert.equal(table.ops.HomeLatestTimeline.features.length, 42);
     const expected = Object.fromEntries(table.ops.HomeLatestTimeline.features.map((k) => [k, table.values[k] === true]));
     assert.deepEqual(JSON.parse(url.searchParams.get('features')), expected);
     assert.equal(toasts.length, 1);

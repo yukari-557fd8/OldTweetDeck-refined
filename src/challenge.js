@@ -32,18 +32,6 @@ else {
     }, 50);
 }
 
-function uuidV4() {
-    const uuid = new Array(36);
-    for (let i = 0; i < 36; i++) {
-      uuid[i] = Math.floor(Math.random() * 16);
-    }
-    uuid[14] = 4; // set bits 12-15 of time-high-and-version to 0100
-    uuid[19] = uuid[19] &= ~(1 << 2); // set bit 6 of clock-seq-and-reserved to zero
-    uuid[19] = uuid[19] |= (1 << 3); // set bit 7 of clock-seq-and-reserved to one
-    uuid[8] = uuid[13] = uuid[18] = uuid[23] = '-';
-    return uuid.map((x) => x.toString(16)).join('');
-}
-
 async function readCryptoKey() {
     return new Promise((resolve, reject) => {
         let request = indexedDB.open("localforage");
@@ -164,17 +152,23 @@ window.addEventListener('message', e => {
 
 (async () => {
     try {
+        // X-Client-UUID is the device id of x.com's own DM keys, and x.com sends the header only
+        // when it has one (bundle.LoggedInApiFilters of 2026-11-11: session.deviceId; none of the
+        // 45 API requests in that day's HAR carried it). So the id is never made up here: an
+        // account without the key sends no header, as on x.com, and an id an older build made up
+        // is dropped. A failed read leaves what is stored.
         try {
             let cryptoKey = await readCryptoKey();
-            if(cryptoKey) {
+            if(cryptoKey && cryptoKey.deviceId) {
                 localStorage.device_id = cryptoKey.deviceId;
-            } else if(!localStorage.device_id) {
-                localStorage.device_id = uuidV4();
+            } else {
+                delete localStorage.device_id;
             }
         } catch(e) {
-            console.warn(`Error during device id generation:`, e);
-            if(!localStorage.device_id) {
-                localStorage.device_id = uuidV4();
+            if(e === "No key found") {
+                delete localStorage.device_id;
+            } else {
+                console.warn(`Error reading the device id:`, e);
             }
         }
 
