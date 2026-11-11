@@ -581,6 +581,7 @@ function fillUserFromGraph(user, result) {
     if (result.relationship_perspectives?.muting) user.muting = true;
     if (result.relationship_perspectives?.blocking) user.blocking = true;
     applyGraphUserState(user, result);
+    rememberUser(user);
     return user;
 }
 
@@ -1380,8 +1381,10 @@ function sendFriendshipChange(xhr, body) {
     const legacy = new URLSearchParams(typeof body === "string" ? body : "");
     const send = (userId) => {
         const form = new URLSearchParams(FRIENDSHIP_CHANGE_PARAMS.map((name) => [name, "1"]));
-        // without an id (the lookup failed) legacy's own parameters go along instead
+        // without an id (the lookup failed) the name stands in; none of the parameters legacy adds
+        // to every call (cards_platform, tweet_mode, …) is x.com's here
         if (userId) form.set("user_id", userId);
+        else if (screenName) form.set("screen_name", screenName);
         else for (const [name, value] of legacy) form.set(name, value);
         xhr.send(form.toString());
     };
@@ -3391,7 +3394,6 @@ function legacyUserFromGraph(result) {
     });
     if (!user.profile_image_url) user.profile_image_url = image.replace("https://", "http://");
     fillUserFromGraph(user, result);
-    rememberUser(user);
     return user;
 }
 
@@ -3415,39 +3417,20 @@ function listMemberMutationHeaders(xhr) {
     delete xhr.modReqHeaders["X-Twitter-Client-Version"];
 }
 
+// The id of a screen name: remembered from what the columns have shown, or asked of X the way
+// x.com's profile page does (UserByScreenName with the session's headers; the bare request this
+// used to send was refused with 403, seen 2026-11-11).
 function lookupUserId(screenName) {
     const known = screenNameIds[String(screenName || "").toLowerCase()];
     if (known) return Promise.resolve(known);
-    return new Promise((resolve, reject) => {
-        let req;
-        try {
-            req = new XMLHttpRequest();
-        } catch (e) {
-            reject(e);
-            return;
-        }
-        if (!req || typeof req.open !== "function") {
-            reject(new Error("user lookup unavailable"));
-            return;
-        }
-        const url = `${NEW_API}/AMIBMjtxEEATh4z8V9GtRg/UserByScreenName?${generateParams(
-            USER_BY_SCREEN_NAME_FEATURES,
-            { screen_name: screenName, withGrokTranslatedBio: true },
-            { withPayments: false, withAuxiliaryUserLabels: true }
-        )}`;
-        req.open("GET", url, true);
-        req.onload = () => {
-            try {
-                const data = JSON.parse(req.responseText);
-                const user = legacyUserFromGraph(data?.data?.user?.result);
-                if (!user) reject(new Error("missing user"));
-                else resolve(user.id_str);
-            } catch (e) {
-                reject(e);
-            }
-        };
-        req.onerror = () => reject(new Error("user lookup failed"));
-        req.send();
+    return graphqlGet(
+        "UserByScreenName",
+        { screen_name: screenName, withGrokTranslatedBio: true },
+        { withPayments: false, withAuxiliaryUserLabels: true }
+    ).then(({ status, data }) => {
+        const user = legacyUserFromGraph(data?.data?.user?.result);
+        if (!user) throw new Error(`user lookup answered ${status}`);
+        return user.id_str;
     });
 }
 

@@ -220,13 +220,37 @@ test("a follow and an unfollow go to x.com's own origin with its body: the switc
     assert.equal(acting.sentBody, `${FOLLOW_SWITCHES}&user_id=9`);
     // a name nothing is known about is looked up; if that fails the name goes along instead
     const before = FakeXHR.all.length;
-    const unknown = await send(ctx, 'POST', API + 'friendships/create.json', 'screen_name=nobody', JQUERY);
+    const unknown = await send(ctx, 'POST', API + 'friendships/create.json', 'screen_name=nobody&cards_platform=Web-13&tweet_mode=extended', JQUERY);
     assert.equal(unknown.sentBody, undefined, 'waits for the lookup');
     const lookup = FakeXHR.all.at(-1);
     assert.ok(FakeXHR.all.length > before && lookup.opens[0].includes('/UserByScreenName?'), lookup.opens[0]);
     lookup.onerror();
     await settle();
     assert.equal(unknown.sentBody, `${FOLLOW_SWITCHES}&screen_name=nobody`);
+});
+
+test("a name the columns have not shown is looked up as x.com's profile page does, and every user they show is remembered", async () => {
+    const ctx = load();
+    // legacy's own parameters ride along with the name, as TD.net.ajax adds them
+    const follow = await send(ctx, 'POST', API + 'friendships/create.json', 'screen_name=Later&cards_platform=Web-13&include_entities=1', JQUERY);
+    await settle();
+    const lookup = FakeXHR.all.at(-1);
+    const url = new URL(lookup.opens.at(-1));
+    assert.equal(url.pathname.split('/').pop(), 'UserByScreenName');
+    assert.deepEqual(JSON.parse(url.searchParams.get('variables')), { screen_name: 'Later', withGrokTranslatedBio: true });
+    assert.deepEqual(JSON.parse(url.searchParams.get('fieldToggles')), { withPayments: false, withAuxiliaryUserLabels: true });
+    // the session's headers: without them X answered 403 (HAR of 2026-11-11)
+    assert.deepEqual(headerNames(lookup).sort(), ['authorization', 'content-type', 'x-client-transaction-id', 'x-csrf-token', 'x-twitter-active-user', 'x-twitter-auth-type', 'x-twitter-client-language']);
+    lookup.answer(200, JSON.stringify({ data: { user: { result: { __typename: 'User', rest_id: '77', core: { screen_name: 'Later', name: 'L' }, legacy: {} } } } }));
+    lookup.onload();
+    await settle();
+    assert.equal(follow.sentBody, `${FOLLOW_SWITCHES}&user_id=77`, "x.com's body: none of legacy's parameters");
+    // the answer is remembered, and so is the author of any tweet a column parsed
+    const before = FakeXHR.all.length;
+    assert.equal((await send(ctx, 'POST', API + 'friendships/destroy.json', 'screen_name=later', JQUERY)).sentBody, `${FOLLOW_SWITCHES}&user_id=77`);
+    vm.runInContext('fillUserFromGraph', ctx)({ id_str: '88' }, { core: { screen_name: 'Author', name: 'A' } });
+    assert.equal((await send(ctx, 'POST', API + 'friendships/create.json', 'screen_name=author', JQUERY)).sentBody, `${FOLLOW_SWITCHES}&user_id=88`);
+    assert.equal(FakeXHR.all.length, before + 2, 'no lookup for either');
 });
 
 test("the digest of an upload's pieces is MD5, however they are cut", () => {

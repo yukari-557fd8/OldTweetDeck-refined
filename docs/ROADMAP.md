@@ -508,7 +508,7 @@ upstream への PR は「進め方」のとおり(#554、#552、Phase 1、起動
 
 ## Phase 11: 書き込み要求を x.com 本体に揃える(実装済み)
 
-**状態: 実装済み。実機未確認。** 変更は `src/interception.js`、`src/challenge.js`、テストは `tests/write-routes.test.cjs`。最初の実装(b2d99ed、2026-10-28)のうち言語の出どころ・variables・features の退路は 11-b(4a66332)で置き換え、11-c で本体の実際の投稿・フォロー・画像アップロードと突き合わせた。
+**状態: 実装済み。実機確認 2026-11-11(投稿・貼り付け投稿・画像・フォロー。フォロー時の ID 解決の修正だけ未確認)。** 変更は `src/interception.js`、`src/challenge.js`、テストは `tests/write-routes.test.cjs`。最初の実装(b2d99ed、2026-10-28)のうち言語の出どころ・variables・features の退路は 11-b(4a66332)で置き換え、11-c で本体の実際の投稿・フォロー・画像アップロードと突き合わせた。
 
 発端: 2026-10-28 に、この fork の書き込み要求と x.com 本体の書き込み要求の差を棚卸しした。背景は upstream issue 298(2024-06、古いクエリ ID と変数で送ったリプライが X にスパム扱いされ、会話で「このポストは表示できません」になった)。差は 3 群に分かれる: (1) すぐ直せて副作用が無いもの、(2) 本体の HAR を見てから決めるもの(フォローの本文とホスト、メディアアップロードの経路、Referer、`x-xp-forwarded-for`)、(3) 構造上埋められないもの(Teams の `x-act-as-user-id`、DM の旧 `dm/new.json`、要求の前後関係)。ここでは (1) を実装した。
 
@@ -558,6 +558,14 @@ HAR で分かったが手を付けていないもの:
 - **`X-Client-UUID`(11-b の訂正)**: 2 本の HAR の本体の要求には 1 件も無い(投稿・フォロー含む)。ID を state に入れるのは必要時にだけ読まれるチャンク `ondemand.DirectMessagesCrypto`(旧暗号化 DM の鍵)で、ページの通常の動作では走らない。TweetDeck では決して走らないので、ヘッダ自体を送るのをやめた。`src/challenge.js` の ID 読み取りも削除し、残っていた `localStorage.device_id` は消す。
 - **`x-client-transaction-id` の署名対象**: 本体のフィルタの順は「`/i/api` への書き換え → 署名」。OTD は実際に送る URL の pathname で署名しているので、同じになっている(変更なし)。
 
+実機確認(2026-11-11 10:52 UTC、Edge、`OTDalwaysUseLocalFiles`、c749dba + d1f667c): TweetDeck から手入力の投稿、貼り付けだけの投稿、PNG 付きの投稿、フォローを行った HAR(`x.com-tweetdeck.har`)を、同日の本体の HAR と要求ごとに比べた。
+
+- 投稿 3 件は 200。URL、ヘッダ名、本文は本体と同じで、違いは `semantic_annotation_options` の中身だけ(手入力 `{"source":"Unknown"}`、貼り付けのみ `{"composition_signal_1":true,"source":"Unknown"}`、本体は `{"source":"Htl"}`)。legacy は送信が終わるまで作成欄の本文を消さないので、欄との照合は効いている。
+- アップロードは INIT 202 / APPEND 204 ×4 / FINALIZE 201。URL とヘッダ名は本体と同じ。本体のときと同じ PNG を上げており、4 断片から計算した `original_md5` は本体が送った値と一致した。
+- フォローは 200、URL とヘッダは本体と同じ。ただし ID を知らない相手だったので `UserByScreenName` を引きに行き、**403 で失敗**して `screen_name` と legacy の既定パラメータ付きで送っていた。原因は `lookupUserId` が認証系のヘッダ(`authorization`、`x-csrf-token`、`x-twitter-auth-type`)を付けずに要求していたこと(以前からの不具合で、リストへの名前での追加も同じ経路)。→ `graphqlGet` 経由にして本体のプロフィール画面と同じ要求にし、カラムが表示したユーザー(投稿者・RT 元・引用元)の ID を全部覚えるようにした(`fillUserFromGraph` で `rememberUser`)。引けなかったときは `screen_name` だけを付ける(legacy の既定パラメータは落とす)。この修正は実機未確認。
+- 全 API 要求(26 件)に `x-client-uuid` と TweetDeck の client version は無く、言語は `ja`。Home と通知の取得は従来どおり 200。
+- その前の HAR(10:45 UTC)は `OTDalwaysUseLocalFiles` が効いておらず main(8ecfe22)で動いていた。そこで実行時の登録表が読んだ `NotificationsTimeline` の現行 ID(`XANkUc…`、Home と同じ 42 鍵)が分かり、写した表に反映した(d1f667c)。
+
 残っている差:
 
 1. `source` が `Unknown`(本体のホームからの投稿は `Htl`)。意図的。
@@ -571,7 +579,8 @@ HAR で分かったが手を付けていないもの:
 - `tests/write-routes.test.cjs`(6 件): ルートの有無にかかわらず本体のヘッダになり TweetDeck の client version が出ないこと(アップロード先と他サイトの扱いも)、言語がページのアカウント言語(対応表つき)でそれまではブラウザの言語になること、CreateTweet の variables と順序(`dark_request` 無し、tweetstorm の `batch_compose`、引用、不正な返信先)、RT・RT 取消・削除・いいねの variables、登録表 off のときの ID と features が写した表と一致すること、セッション束縛の通知。
 - 11-c の分(同じファイルに 5 件): フォローと解除の URL・本文・content-type(代理、ID 既知、名前の解決失敗)、`md5Stream` が Node の MD5 と一致すること(大きさと切り方を変えて)、画像のアップロード(パス、`media_category`、断片の再送、FINALIZE の `original_md5` とその再送)、digest を付けない場合(順序違い、読めない断片、GIF、動画、STATUS)、作成欄の信号(未入力、入力、貼り付けのみ、修飾キー、送信後の数え直し、switch が false)。
 - `tests/challenge.test.cjs`: 以前のビルドが残したデバイス ID を消すこと。
-- `node --test tests/*.test.cjs` は 165 件通過。
+- 実機確認後の分(1 件): 名前から ID を引く要求が本体のプロフィール画面と同じ形とヘッダになること、答えと、カラムが表示したユーザーを覚えること。
+- `node --test tests/*.test.cjs` は 166 件通過。
 
 ---
 
