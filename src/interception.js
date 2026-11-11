@@ -41,6 +41,65 @@ function alignClientHeaders(xhr) {
     headers["X-Twitter-Client-Language"] = clientLanguage();
 }
 
+// x.com's composer counts the keystrokes and pastes in its text field (the keyboard part of the
+// interaction detector in bundle.Compose~bundle.RichTextCompose, 2026-11-11) and, behind the
+// switch composer_composition_signals_enabled, sends with CreateTweet
+//   semantic_annotation_options: { composition_signal_1: true, source }
+// composition_signal_1 is there only for a post that was pasted and never typed. source is where
+// the composer was opened: "Htl" (/home), "Profile", "UniversalLink" (an intent or a typed URL)
+// or "Unknown" (anywhere else). Both posts of that day's HAR carry { source: "Htl" }. TweetDeck's
+// compose fields are counted the same way, so a post says here what it would have said there.
+const COMPOSE_FIELDS = "textarea.js-compose-text, textarea.js-reply-tweetbox";
+const COMPOSE_IGNORED_KEYS = new Set(["Alt", "CapsLock", "Control", "Meta", "NumLock", "ScrollLock", "Shift"]);
+// TweetDeck has several compose fields at once (the drawer, a reply box per open tweet) where
+// x.com has one detector per composer, so each field is counted on its own: the few used last.
+const composeInput = { fields: [], enabled: false };
+function composeCounts(event) {
+    const field = event?.target;
+    if (!field || typeof field.matches !== "function" || !field.matches(COMPOSE_FIELDS)) return null;
+    const fields = composeInput.fields;
+    let at = fields.findIndex((entry) => entry.field === field);
+    const entry = at < 0 ? { field, keystrokes: 0, pastes: 0 } : fields.splice(at, 1)[0];
+    fields.push(entry);
+    if (fields.length > 8) fields.shift();
+    return entry;
+}
+function noteComposeKey(event) {
+    if (!event || COMPOSE_IGNORED_KEYS.has(event.key) || event.metaKey || event.ctrlKey) return;
+    const counts = composeCounts(event);
+    if (counts) counts.keystrokes++;
+}
+function noteComposePaste(event) {
+    const counts = composeCounts(event);
+    if (counts) counts.pastes++;
+}
+if (typeof document === "object" && document && typeof document.addEventListener === "function") {
+    document.addEventListener("keydown", noteComposeKey, { passive: true, capture: true });
+    document.addEventListener("paste", noteComposePaste, { passive: true, capture: true });
+}
+// The semantic_annotation_options of the post being sent: nothing while x.com sends none. The
+// post is matched to the field that holds its text (the one used last, if several do); a post no
+// counted field holds, a re-draft say, carries no signal, as an untouched composer's on x.com.
+function compositionOptions(xhr, text) {
+    if (!composeInput.enabled) return undefined;
+    const wanted = String(text ?? "").trim();
+    let counts = null;
+    for (const entry of composeInput.fields) {
+        if (entry.field.isConnected === false) continue;
+        if (String(entry.field.value ?? "").trim() === wanted) counts = entry;
+    }
+    if (xhr?.storage) xhr.storage.composeField = counts?.field;
+    const options = {};
+    if (counts && counts.pastes > 0 && counts.keystrokes === 0) options.composition_signal_1 = true;
+    options.source = "Unknown";
+    return options;
+}
+// x.com starts counting again once the post is out.
+function compositionSent(xhr) {
+    const field = xhr?.storage?.composeField;
+    if (field) composeInput.fields = composeInput.fields.filter((entry) => entry.field !== field);
+}
+
 let verifiedUser;
 if(localStorage.OTDverifiedUser) {
     try {
@@ -1306,10 +1365,47 @@ const friendshipShowRoute = {
 
 // friendships/create.json and friendships/destroy.json answer with the other account as a v1.1
 // user, following / followed_by included: the memory follows what TweetDeck just did.
+//
+// x.com's own request (HAR of 2026-11-11, a follow from a profile): POST to its own origin,
+// /i/api/1.1/friendships/create.json, content-type application/x-www-form-urlencoded, and a body of
+// the include_* switches below followed by user_id. Legacy posts screen_name alone to api.x.com.
+// x.com leaves api.x.com to the requests of an account it acts for (x-act-as-user-id), so those
+// keep their host here too. unfollow is the same call with friendships/destroy.
+const FRIENDSHIP_CHANGE_PARAMS = [
+    "include_profile_interstitial_type", "include_blocking", "include_blocked_by", "include_followed_by",
+    "include_want_retweets", "include_mute_edge", "include_can_dm", "include_can_media_tag",
+    "include_ext_is_blue_verified", "include_ext_verified_type", "include_ext_profile_image_shape", "skip_status",
+];
+function sendFriendshipChange(xhr, body) {
+    const legacy = new URLSearchParams(typeof body === "string" ? body : "");
+    const send = (userId) => {
+        const form = new URLSearchParams(FRIENDSHIP_CHANGE_PARAMS.map((name) => [name, "1"]));
+        // without an id (the lookup failed) legacy's own parameters go along instead
+        if (userId) form.set("user_id", userId);
+        else for (const [name, value] of legacy) form.set(name, value);
+        xhr.send(form.toString());
+    };
+    const userId = legacy.get("user_id");
+    const screenName = legacy.get("screen_name");
+    if (userId || !screenName) send(userId);
+    else lookupUserId(screenName).then(send, () => send(null));
+}
+
 function friendshipChangeRoute(path) {
     return {
         path,
         method: "POST",
+        openHandler: deferOpen,
+        beforeSend: (xhr) => {
+            if (!getRequestHeader(xhr, "x-act-as-user-id")) xhr.modUrl = `https://${location.hostname}/i/api${path}`;
+            openDeferred(xhr);
+        },
+        beforeSendHeaders: (xhr) => {
+            // jQuery adds "; charset=UTF-8"
+            for (const name of Object.keys(xhr.modReqHeaders)) if (name.toLowerCase() === "content-type") delete xhr.modReqHeaders[name];
+            xhr.modReqHeaders["Content-Type"] = "application/x-www-form-urlencoded";
+        },
+        sendHandler: (xhr, body) => { sendFriendshipChange(xhr, body); },
         afterRequest: (xhr) => {
             const text = xhr.responseText;
             try {
@@ -1319,6 +1415,146 @@ function friendshipChangeRoute(path) {
                 }
             } catch (e) {
                 // not a user: legacy reads the answer as it is
+            }
+            return text;
+        },
+    };
+}
+
+// ---- media upload -----------------------------------------------------------------------------
+
+// x.com uploads to upload.x.com/i/media/upload.json (HAR of 2026-11-11, a PNG):
+//   POST ?command=INIT&total_bytes=…&media_type=image%2Fpng&media_category=tweet_image   202
+//   POST ?command=APPEND&media_id=…&segment_index=0   multipart "media"                 204
+//   POST ?command=FINALIZE&media_id=…&original_md5=<md5 of the file>                    201
+// with authorization, x-csrf-token and x-twitter-auth-type. Legacy's uploader (vendor.js) sends the
+// same three steps and headers to /1.1/media/upload.json, with no media_category for an image and
+// no original_md5. The routes below move every step (STATUS included, which x.com also asks at
+// /i/) to x.com's path and add the two parameters for images, the only kind seen. The digest is
+// taken from the pieces as they go up; an upload whose pieces could not all be read, or came out
+// of order, is finalized without it, as before.
+const MD5_SHIFTS = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
+const MD5_SINES = Array.from({ length: 64 }, (_, i) => Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296));
+function md5Stream() {
+    let a = 0x67452301, b = 0xefcdab89 | 0, c = 0x98badcfe | 0, d = 0x10325476;
+    let length = 0;
+    let tail = new Uint8Array(0);
+    const words = new Int32Array(16);
+    const block = (view, offset) => {
+        for (let i = 0; i < 16; i++) words[i] = view.getInt32(offset + i * 4, true);
+        let A = a, B = b, C = c, D = d;
+        for (let i = 0; i < 64; i++) {
+            let f, g;
+            if (i < 16) { f = (B & C) | (~B & D); g = i; }
+            else if (i < 32) { f = (D & B) | (~D & C); g = (5 * i + 1) % 16; }
+            else if (i < 48) { f = B ^ C ^ D; g = (3 * i + 5) % 16; }
+            else { f = C ^ (B | ~D); g = (7 * i) % 16; }
+            f = (f + A + MD5_SINES[i] + words[g]) | 0;
+            const shift = MD5_SHIFTS[(i >> 4) * 4 + (i % 4)];
+            A = D; D = C; C = B;
+            B = (B + ((f << shift) | (f >>> (32 - shift)))) | 0;
+        }
+        a = (a + A) | 0; b = (b + B) | 0; c = (c + C) | 0; d = (d + D) | 0;
+    };
+    const blocks = (bytes) => {
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const whole = bytes.length - (bytes.length % 64);
+        for (let i = 0; i < whole; i += 64) block(view, i);
+        return whole;
+    };
+    return {
+        update(buffer) {
+            let bytes = new Uint8Array(buffer);
+            length += bytes.length;
+            if (tail.length) {
+                const joined = new Uint8Array(tail.length + bytes.length);
+                joined.set(tail);
+                joined.set(bytes, tail.length);
+                bytes = joined;
+            }
+            tail = bytes.slice(blocks(bytes));
+        },
+        hex() {
+            const end = new Uint8Array(tail.length < 56 ? 64 : 128);
+            end.set(tail);
+            end[tail.length] = 0x80;
+            const view = new DataView(end.buffer);
+            view.setUint32(end.length - 8, (length * 8) >>> 0, true);
+            view.setUint32(end.length - 4, Math.floor(length / 536870912) >>> 0, true);
+            blocks(end);
+            const out = new DataView(new ArrayBuffer(16));
+            [a, b, c, d].forEach((word, i) => out.setInt32(i * 4, word, true));
+            return Array.from(new Uint8Array(out.buffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
+        },
+    };
+}
+
+const mediaUploads = new Map(); // media id -> { md5, chain, next, ok, hex } for the images going up
+function sendMediaUpload(xhr, body) {
+    const { command, mediaId } = xhr.storage.upload || {};
+    const upload = mediaId ? mediaUploads.get(mediaId) : null;
+    if (upload && command === "APPEND") {
+        const index = Number(new URL(xhr.modUrl).searchParams.get("segment_index"));
+        const piece = body && typeof body.get === "function" ? body.get("media") : null;
+        if (index === upload.next && piece && typeof piece.arrayBuffer === "function") {
+            upload.next++;
+            upload.chain = upload.chain.then(() => piece.arrayBuffer()).then((buffer) => upload.md5.update(buffer)).catch(() => { upload.ok = false; });
+        } else if (!(index < upload.next)) {
+            upload.ok = false; // not the next piece (a repeat of one already read is fine)
+        }
+    }
+    if (!xhr.storage.upload?.awaitsDigest) {
+        xhr.send(body);
+        return;
+    }
+    // FINALIZE was left unopened: its URL takes the digest once the last piece has been read
+    upload.chain.then(() => {
+        if (!upload.ok) return;
+        upload.hex ??= upload.md5.hex();
+        const url = new URL(xhr.modUrl);
+        url.searchParams.append("original_md5", upload.hex);
+        xhr.modUrl = url.toString();
+    }).catch(() => {}).then(() => {
+        openDeferred(xhr);
+        for (const [name, value] of Object.entries(xhr.modReqHeaders)) xhr.setRequestHeader(name, value);
+        xhr.send(body);
+    });
+}
+
+function mediaUploadRoute(method) {
+    return {
+        path: "/1.1/media/upload.json",
+        method,
+        openHandler: deferOpen,
+        beforeSend: (xhr) => {
+            const url = new URL(xhr.modUrl);
+            url.pathname = "/i/media/upload.json";
+            const query = url.searchParams;
+            const upload = (xhr.storage.upload = { command: query.get("command"), mediaId: query.get("media_id") });
+            if (upload.command === "INIT") {
+                upload.image = /^image\/(?!gif)/.test(query.get("media_type") || "");
+                if (upload.image && !query.has("media_category")) query.append("media_category", "tweet_image");
+            }
+            url.search = query.toString();
+            xhr.modUrl = url.toString();
+            upload.awaitsDigest = upload.command === "FINALIZE" && mediaUploads.has(upload.mediaId);
+            if (!upload.awaitsDigest) openDeferred(xhr);
+        },
+        sendHandler: (xhr, body) => { sendMediaUpload(xhr, body); },
+        afterRequest: (xhr) => {
+            const text = xhr.responseText;
+            if (xhr.storage.upload?.image && !xhr.storage.upload.noted) {
+                xhr.storage.upload.noted = true;
+                try {
+                    const id = JSON.parse(text)?.media_id_string;
+                    if (id) {
+                        // an upload that was never finalized must not stay for ever
+                        if (mediaUploads.size >= 16) mediaUploads.delete(mediaUploads.keys().next().value);
+                        mediaUploads.set(String(id), { md5: md5Stream(), chain: Promise.resolve(), next: 0, ok: true });
+                    }
+                } catch (e) {
+                    // not an INIT answer: the upload goes on without a digest
+                }
             }
             return text;
         },
@@ -2741,6 +2977,7 @@ function readPageLoginUser() {
             pageLanguage = language;
             localStorage[ACCOUNT_LANGUAGE_KEY] = language;
         }
+        composeInput.enabled = state?.featureSwitch?.user?.config?.composer_composition_signals_enabled?.value === true;
         noteSessionBinding(state?.featureSwitch?.user?.config);
         return pageLoginUser;
     }).catch((e) => {
@@ -4332,6 +4569,8 @@ const proxyRoutes = [
     friendshipShowRoute,
     friendshipChangeRoute("/1.1/friendships/create.json"),
     friendshipChangeRoute("/1.1/friendships/destroy.json"),
+    mediaUploadRoute("POST"),
+    mediaUploadRoute("GET"),
     {
         path: "/1.1/help/configuration.json",
         method: "GET",
@@ -4792,9 +5031,9 @@ const proxyRoutes = [
         beforeSendBody: (xhr, body) => {
             let params = Object.fromEntries(new URLSearchParams(body));
             // x.com's own variables (sendTweet in main.js of 2026-11-11), in its key order:
-            // tweet_text, attachment_url, reply, batch_compose, media, semantic_annotation_ids and
-            // disallowed_reply_options (null unless the composer restricted replies). It sends no
-            // dark_request any more. Legacy's batch_mode has x.com's values: a "tweetstorm" goes
+            // tweet_text, attachment_url, reply, batch_compose, media, semantic_annotation_ids,
+            // disallowed_reply_options (null unless the composer restricted replies) and
+            // semantic_annotation_options (compositionOptions). It sends no dark_request any more. Legacy's batch_mode has x.com's values: a "tweetstorm" goes
             // out one tweet at a time, the follow-ups as replies with batch_mode=subsequent.
             const variables = { tweet_text: params.status };
             if (params.attachment_url) variables.attachment_url = params.attachment_url;
@@ -4812,6 +5051,8 @@ const proxyRoutes = [
             };
             variables.semantic_annotation_ids = [];
             variables.disallowed_reply_options = null;
+            const composition = compositionOptions(xhr, params.status);
+            if (composition) variables.semantic_annotation_options = composition;
 
             // the registry replaces features and queryId with what x.com's bundles declare now;
             // these are the built-in table's, for when it is off
@@ -4837,6 +5078,7 @@ const proxyRoutes = [
             let tweet = xhr.storage.tweet;
             if (!tweet) {
                 tweet = xhr.storage.tweet = parseTweet(data.data.create_tweet.tweet_results.result);
+                compositionSent(xhr);
                 showOwnTweetInHome(tweet);
             }
             return tweet;
@@ -5668,7 +5910,10 @@ XMLHttpRequest = function () {
                     this.modUrl.includes("x.com/i/api")
                 )
             ) {
-                if(localStorage.device_id) this.setRequestHeader('X-Client-UUID', localStorage.device_id);
+                // No X-Client-UUID: x.com sends it only once its on-demand DM key module has run
+                // in the page (ondemand.DirectMessagesCrypto sets session.deviceId). None of its
+                // own requests in the two HARs of 2026-11-11 had it, the posts and the follow
+                // included, and TweetDeck never runs that module.
                 if(Date.now() - OTD_INIT_TIME < 3000 && !window.solveChallenge) {
                     console.log('waiting for challenge');
                     let i = 0;

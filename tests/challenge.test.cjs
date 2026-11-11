@@ -41,54 +41,14 @@ test('once the iframe has loaded, the usual 20 s timeout applies', async () => {
     assert.equal(await outcome, 'Solver timed out');
 });
 
-// x.com's localforage store as far as the device id needs it: the given entries, or a failing open.
-function fakeIndexedDB(entries) {
-    return {
-        open() {
-            const request = {};
-            Promise.resolve().then(() => {
-                if (!entries) return request.onerror({ type: 'error' });
-                const db = {
-                    objectStoreNames: { contains: (name) => name === 'keyvaluepairs' },
-                    transaction: () => ({ objectStore: () => ({ openCursor() {
-                        const cursorRequest = {};
-                        let i = 0;
-                        const step = () => Promise.resolve().then(() => {
-                            const entry = entries[i++];
-                            cursorRequest.onsuccess({ target: { result: entry ? { key: entry[0], value: entry[1], continue: step } : null } });
-                        });
-                        step();
-                        return cursorRequest;
-                    } }) }),
-                };
-                request.onsuccess({ target: { result: db } });
-            });
-            return request;
-        },
-    };
-}
-async function deviceIdAfter(entries, stored) {
-    const localStorage = stored ? { device_id: stored } : {};
+test('a device id an older build stored is dropped: X-Client-UUID is no longer sent', () => {
+    const localStorage = { device_id: 'made-up-before' };
     const context = vm.createContext({
         document: { createElement: () => ({ style: {}, addEventListener() {} }), getElementById: () => null },
-        window: { addEventListener() {} },
-        fetch: () => new Promise(() => {}), indexedDB: fakeIndexedDB(entries),
+        window: { addEventListener() {} }, fetch: () => new Promise(() => {}),
         setTimeout() {}, setInterval: () => 1, clearInterval() {},
         localStorage, location: { hostname: 'x.com' }, console: { ...console, log() {}, warn() {}, error() {} },
     });
     vm.runInContext(source, context);
-    await new Promise((resolve) => setImmediate(resolve));
-    return localStorage.device_id;
-}
-
-test("the device id is x.com's own or none: it is never made up, and a made-up one is dropped", async () => {
-    const key = ['device:rweb.dmCryptoKeys.1', { deviceId: 'real-device' }];
-    assert.equal(await deviceIdAfter([['other', {}], key]), 'real-device');
-    assert.equal(await deviceIdAfter([key], 'made-up-before'), 'real-device');
-    // no key on x.com: no X-Client-UUID, as on x.com
-    assert.equal(await deviceIdAfter([['other', {}]]), undefined);
-    assert.equal(await deviceIdAfter([], 'made-up-before'), undefined);
-    // a read that failed says nothing about the key: what is stored stays, nothing is invented
-    assert.equal(await deviceIdAfter(null, 'stored'), 'stored');
-    assert.equal(await deviceIdAfter(null), undefined);
+    assert.equal('device_id' in localStorage, false);
 });

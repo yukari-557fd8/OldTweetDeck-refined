@@ -317,7 +317,7 @@ test("a follow or unfollow from TweetDeck updates the remembered relationship fr
     follow.open('POST', 'https://api.x.com/1.1/friendships/create.json', true);
     const read = new Promise((resolve) => { follow.onload = () => resolve(JSON.parse(follow.responseText)); });
     await follow.send('user_id=7');
-    assert.equal(follow.url, 'https://api.x.com/1.1/friendships/create.json');
+    assert.equal(follow.url, 'https://x.com/i/api/1.1/friendships/create.json', "x.com's own host for a follow");
     follow.respond(200, JSON.stringify({ id_str: '7', screen_name: 'user7', following: true, followed_by: true }));
     assert.equal((await read).following, true, 'legacy still gets the user');
     const shown = await legacyGet(context, SHOW('target_screen_name=user7'));

@@ -32,45 +32,6 @@ else {
     }, 50);
 }
 
-async function readCryptoKey() {
-    return new Promise((resolve, reject) => {
-        let request = indexedDB.open("localforage");
-
-        request.onerror = function(event) {
-            reject(event);
-        };
-
-        request.onsuccess = function(event) {
-            const db = event.target.result;
-
-            // Open a transaction to access the keyvaluepairs object store
-            if (db.objectStoreNames.contains('keyvaluepairs')) {
-                const transaction = db.transaction(['keyvaluepairs'], 'readonly');
-                const objectStore = transaction.objectStore('keyvaluepairs');
-            
-                objectStore.openCursor().onsuccess = function(event) {
-                    const cursor = event.target.result;
-                    if (cursor) {
-                        // Check if the key matches the pattern
-                        const key = cursor.key;
-                        if (key.startsWith('device:rweb.dmCryptoKeys')) {
-                            resolve(cursor.value);
-                        }
-                
-                        // Move to the next entry
-                        cursor.continue();
-                    } else {
-                        // No more entries, reject the promise
-                        reject("No key found");
-                    }
-                };
-            } else {
-                reject("No key found");
-            }
-        };
-    });
-}
-
 function solveChallenge(path, method) {
     return new Promise((resolve, reject) => {
         if(solverErrored) {
@@ -152,25 +113,11 @@ window.addEventListener('message', e => {
 
 (async () => {
     try {
-        // X-Client-UUID is the device id of x.com's own DM keys, and x.com sends the header only
-        // when it has one (bundle.LoggedInApiFilters of 2026-11-11: session.deviceId; none of the
-        // 45 API requests in that day's HAR carried it). So the id is never made up here: an
-        // account without the key sends no header, as on x.com, and an id an older build made up
-        // is dropped. A failed read leaves what is stored.
-        try {
-            let cryptoKey = await readCryptoKey();
-            if(cryptoKey && cryptoKey.deviceId) {
-                localStorage.device_id = cryptoKey.deviceId;
-            } else {
-                delete localStorage.device_id;
-            }
-        } catch(e) {
-            if(e === "No key found") {
-                delete localStorage.device_id;
-            } else {
-                console.warn(`Error reading the device id:`, e);
-            }
-        }
+        // Older builds kept a device id here (x.com's DM key id, or one they made up) and sent it
+        // as X-Client-UUID. x.com's page sends that header only once its on-demand DM key module
+        // has run, which never happens in TweetDeck: none of x.com's own requests in the HARs of
+        // 2026-11-11 had it. interception.js no longer sends it, so the id is dropped.
+        delete localStorage.device_id;
 
         // interception.js reads the same page for x.com's GraphQL query ids; whichever asks first fetches it.
         if(!window.OTDhomepage) {

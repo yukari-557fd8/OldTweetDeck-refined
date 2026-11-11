@@ -508,7 +508,7 @@ upstream への PR は「進め方」のとおり(#554、#552、Phase 1、起動
 
 ## Phase 11: 書き込み要求を x.com 本体に揃える(実装済み)
 
-**状態: 実装済み。実機未確認。** 変更は `src/interception.js`、`src/challenge.js`、テストは `tests/write-routes.test.cjs`。最初の実装(b2d99ed、2026-10-28)のうち言語の出どころ・variables・features の退路は 11-b で置き換えた。
+**状態: 実装済み。実機未確認。** 変更は `src/interception.js`、`src/challenge.js`、テストは `tests/write-routes.test.cjs`。最初の実装(b2d99ed、2026-10-28)のうち言語の出どころ・variables・features の退路は 11-b(4a66332)で置き換え、11-c で本体の実際の投稿・フォロー・画像アップロードと突き合わせた。
 
 発端: 2026-10-28 に、この fork の書き込み要求と x.com 本体の書き込み要求の差を棚卸しした。背景は upstream issue 298(2024-06、古いクエリ ID と変数で送ったリプライが X にスパム扱いされ、会話で「このポストは表示できません」になった)。差は 3 群に分かれる: (1) すぐ直せて副作用が無いもの、(2) 本体の HAR を見てから決めるもの(フォローの本文とホスト、メディアアップロードの経路、Referer、`x-xp-forwarded-for`)、(3) 構造上埋められないもの(Teams の `x-act-as-user-id`、DM の旧 `dm/new.json`、要求の前後関係)。ここでは (1) を実装した。
 
@@ -528,25 +528,50 @@ upstream への PR は「進め方」のとおり(#554、#552、Phase 1、起動
 - **言語の値**: 本体は `session.language`(ページの `__INITIAL_STATE__`)を対応表に通して送る(`zh`→`zh-cn`、`zh-Hant`→`zh-tw`、`nb`→`no`、`ms`→`msa`、`fil`→`tl`、ほかはそのまま)。→ `readPageLoginUser` がページから読み、`localStorage.OTDaccountLanguage` に残す。読めるまではブラウザの言語(11 の実装)。
 - **CreateTweet の variables**: 本体の `sendTweet` は `tweet_text, card_uri, attachment_url, reply, batch_compose, geo, media, semantic_annotation_ids, conversation_control, …, disallowed_reply_options` の順で組み、`dark_request` はもう送らない(バンドル全体に文字列が無い)。→ 同じ順にし、`dark_request` を外した。`batch_mode` は legacy と本体で同じ値(`off` / `first` / `subsequent`)なので `first` も `BatchFirst` に写す。ツイート ID でない `in_reply_to_status_id` は本体と同じく捨てる。本文は `variables, features, queryId`(CreateTweet に fieldToggles は付かない)で、もとから同じ。
 - **CreateRetweet / DeleteRetweet / DeleteTweet**: 本体の variables は `{tweet_id}` / `{source_tweet_id}` / `{tweet_id}` だけ。→ `dark_request` を外した。FavoriteTweet はもとから同じ。
-- **`X-Client-UUID`**: 本体は `session.deviceId` があるときだけ送る(`bundle.LoggedInApiFilters`)。HAR の 45 件には 1 件も無い。OTD は x.com の IndexedDB(`device:rweb.dmCryptoKeys`)に ID が無いと乱数の UUID を作って送っていた。→ `src/challenge.js` は ID を作らない。鍵が無ければヘッダ無し(本体と同じ)、以前作った ID は消す。鍵がある場合に本体が今も送るかは未確認(従来どおり送る)。
+- **`X-Client-UUID`**: 本体は `session.deviceId` があるときだけ送る(`bundle.LoggedInApiFilters`)。HAR の 45 件には 1 件も無い。OTD は x.com の IndexedDB(`device:rweb.dmCryptoKeys`)に ID が無いと乱数の UUID を作って送っていた。→ `src/challenge.js` は ID を作らない。鍵が無ければヘッダ無し(本体と同じ)、以前作った ID は消す。鍵がある場合に本体が今も送るかは未確認(従来どおり送る)。 → 11-c でヘッダ自体をやめた。
 - **写した表の更新**: OTD 自身の読み取りコードを HAR のバンドルに対して動かし、24 操作中 23 操作を読んだ(`NotificationsTimeline` のチャンクは HAR に無く、10-25 の値のまま)。HAR 内の実要求(`HomeLatestTimeline` POST、`UsersByRestIds` GET 3 件)と ID・features の鍵と順序・値が一致。変わった ID: Home `IVA5…`、CreateTweet `l4hk8…`、TweetDetail、SearchTimeline、Likes、UserTweetsAndReplies、ListLatestTweetsTimeline、ListMembers、Bookmarks、CombinedLists、BlockedAccountsAll、MutedAccounts。features は `x_elections_post_context_enabled` が増えた(Home 系 42 鍵、CreateTweet 39 鍵)。ルートのハードコード ID と `HOME_TIMELINE_FEATURES` / `LIST_MEMBERS_FEATURES` も同じデプロイに揃えた。CreateTweet の features の退路は写した表から作る(11 で入れたリテラルは廃止)。
 - **セッション束縛(未対応、監視のみ)**: `bundle.LoggedInApiFilters` は switch `rweb_session_binding_enabled` が true のとき、CreateTweet / CreateNoteTweet / FavoriteTweet / UnfavoriteTweet / CreateRetweet / DeleteRetweet / CreateBookmark / DeleteBookmark / UserAccountLabel に `x-twitter-session-signature` / `-timestamp` / `-tokenhash` を付ける(署名は別チャンク 75415 の binder。401 と `x-tfe-auth-result-code: 3071` を見て再試行する)。2026-11-11 時点でこのアカウントは false(既定も false)。X が有効にすると、署名の無い書き込みは OTD のものだけになる。→ `noteSessionBinding` がページの switch を見て、true なら console に出し、1 日 1 回トーストで知らせる。署名の実装はしていない。
 
 HAR で分かったが手を付けていないもの:
 
-1. フォロー: 本体は `POST x.com/i/api/1.1/friendships/create.json` に `include_profile_interstitial_type=1&include_blocking=1&…&skip_status=1&user_id=<ID>`。legacy は `api.x.com` に `screen_name=<名前>` だけ。揃えるには ID の解決と open の保留が要る。実際の要求を HAR で見てから。
+1. フォロー: 本体は `POST x.com/i/api/1.1/friendships/create.json` に `include_profile_interstitial_type=1&include_blocking=1&…&skip_status=1&user_id=<ID>`。legacy は `api.x.com` に `screen_name=<名前>` だけ。揃えるには ID の解決と open の保留が要る。実際の要求を HAR で見てから。 → 11-c で対応。
 2. v1.1 のホスト: 本体は `api.x.com` 宛てを `x.com/i/api` に書き換える(`responsive_web_api_transition_enabled`)。例外は `x-act-as-user-id` 付き(代理)と `/1.1/help/settings.json`、`/1.1/live_pipeline`、`/1.1/account`、`/1.1/attribution`、`/1.1/onboarding`、`/1.1/guest/activate.json`。legacy のルート無し要求はすべて `api.x.com` のまま。全体を書き換えると退役判定(`OTDretiredRest`)などに響くので未着手。
-3. メディア: 本体は `upload.x.com/i/media/upload.json`、legacy は `upload.x.com/1.1/media/upload.json`。INIT の引数も未確認。
+3. メディア: 本体は `upload.x.com/i/media/upload.json`、legacy は `upload.x.com/1.1/media/upload.json`。INIT の引数も未確認。 → 11-c で対応(画像)。
 4. `x-twitter-active-user`: 本体はタブが背景のとき `no` を送る(HAR でも 1 件)。OTD は常に `yes`。背景のデッキが 24 時間「操作中」と申告している形になる。サーバ側の扱い(モバイルの通知抑制など)が読めないので、変えるかは未決。
 5. `timezone` ヘッダ(`responsive_web_timezone_header_enabled`、このアカウントは false)、`x-xp-forwarded-for`(バンドルに無い)は対応不要。
 
-次に要るもの: x.com 本体で投稿・いいね・フォロー・画像付き投稿を 1 回ずつ行った、切れていない HAR(DevTools の記録を操作の直前に消してから取ると小さくなる)。
+次に要るもの: x.com 本体で投稿・いいね・フォロー・画像付き投稿を 1 回ずつ行った、切れていない HAR(DevTools の記録を操作の直前に消してから取ると小さくなる)。→ 同日に取り直した(11-c)。
+
+### 11-c. 本体の実際の書き込み要求との突き合わせ(2026-11-11 の 2 本目の HAR)(実装済み、実機未確認)
+
+材料: 取り直した `x.com.har`(10:15 UTC、42 秒、157 件、欠け無し)。本体で行った操作は、文字だけの投稿、PNG 1 枚の投稿(INIT / APPEND / FINALIZE と `media/metadata/create`)、プロフィールからのフォロー。いいね・RT・ブロックは入っていない。確認には、HAR の操作を legacy が出す形で OTD の Proxy に通し、X に届く要求を本体の要求と比べるスクリプトを使った(スクラッチパッドの `replay-writes.mjs`)。
+
+11-b の実装の確認:
+
+- CreateTweet の URL、ヘッダ名の集合、本文の鍵の順、queryId、features 39 鍵(順序と値)は本体の実要求と一致。`X-Client-UUID` は投稿にもフォローにも付いていない(下記)。セッション署名のヘッダも無い(switch が false)。
+
+新しく分かった差と対応:
+
+- **`semantic_annotation_options`**: 本体の投稿は 2 件とも variables の最後に `{"source":"Htl"}` を持つ。出どころは作成欄の「操作検出器」(`bundle.Compose~bundle.RichTextCompose`)。作成欄の keydown と paste を数え(修飾キーと Ctrl / Meta 併用は数えない)、switch `composer_composition_signals_enabled`(このアカウントは true)が立っていれば `{composition_signal_1: true, source}` を送る。`composition_signal_1` は「貼り付けが 1 回以上あり、キー入力が 0 回」のときだけ付く。`source` は作成欄を開いた場所で、`/home` が `Htl`、プロフィールが `Profile`、intent や URL 直打ちが `UniversalLink`、それ以外が `Unknown`。→ TweetDeck の作成欄(`textarea.js-compose-text` と `textarea.js-reply-tweetbox`)を同じ規則で数え、同じ形で送る(`compositionOptions`)。`source` は `Unknown`(x.com のどの画面でもないので)。**貼り付けだけの投稿は x.com と同じく `composition_signal_1: true` になる。** 数え直しは投稿が成功したとき(本体と同じ)。TweetDeck は作成欄が同時に複数ある(ドロワーと返信欄)ので欄ごとに数え、投稿の本文を持っている欄の数で判定する。どの欄にも無い本文(Re-draft など)には信号を付けない。ページの switch が読めるまで、または false のアカウントでは何も送らない(本体も送らない)。検出器はマウスと入力間隔も集めているが、CreateTweet に載るのはこの 1 項目だけ。
+- **フォロー / 解除**: 本体は `POST x.com/i/api/1.1/friendships/create.json`、`content-type: application/x-www-form-urlencoded`、本文は `include_profile_interstitial_type=1&include_blocking=1&include_blocked_by=1&include_followed_by=1&include_want_retweets=1&include_mute_edge=1&include_can_dm=1&include_can_media_tag=1&include_ext_is_blue_verified=1&include_ext_verified_type=1&include_ext_profile_image_shape=1&skip_status=1&user_id=<ID>`。→ `friendshipChangeRoute` が同じ URL と本文にする。legacy が渡す `screen_name` は覚えている ID に直し、知らなければ `UserByScreenName` で引く(引けなければ `screen_name` のまま送る)。代理(`x-act-as-user-id`)は本体と同じく `api.x.com` のまま。destroy は HAR に無いが、本体のコードは create と同じ形。
+- **画像のアップロード**: 本体は `upload.x.com/i/media/upload.json` に、INIT `?command=INIT&total_bytes=…&media_type=image%2Fpng&media_category=tweet_image`(202)、APPEND `?command=APPEND&media_id=…&segment_index=0` + multipart `media`(204)、FINALIZE `?command=FINALIZE&media_id=…&original_md5=<32 桁>`(201)。ヘッダは `authorization`、`x-csrf-token`、`x-twitter-auth-type` だけ。legacy のアップローダ(`vendor.js`)は同じ 3 段階・同じヘッダで、違いはパス(`/1.1/`)、画像の `media_category` が無いこと、`original_md5` が無いことの 3 点だった。→ `mediaUploadRoute` がパスを全コマンド(STATUS も)で `/i/` にし、画像(GIF 以外)の INIT に `media_category=tweet_image` を足し、APPEND で上がる断片から MD5 を計算して FINALIZE に付ける(`md5Stream`。断片が順に読めなかったときは付けない)。GIF と動画は legacy のまま(HAR に無い)。
+- **`X-Client-UUID`(11-b の訂正)**: 2 本の HAR の本体の要求には 1 件も無い(投稿・フォロー含む)。ID を state に入れるのは必要時にだけ読まれるチャンク `ondemand.DirectMessagesCrypto`(旧暗号化 DM の鍵)で、ページの通常の動作では走らない。TweetDeck では決して走らないので、ヘッダ自体を送るのをやめた。`src/challenge.js` の ID 読み取りも削除し、残っていた `localStorage.device_id` は消す。
+- **`x-client-transaction-id` の署名対象**: 本体のフィルタの順は「`/i/api` への書き換え → 署名」。OTD は実際に送る URL の pathname で署名しているので、同じになっている(変更なし)。
+
+残っている差:
+
+1. `source` が `Unknown`(本体のホームからの投稿は `Htl`)。意図的。
+2. 画像のあとに本体が送る `POST /i/api/1.1/media/metadata/create.json`(`{"media_id","allow_download_status":{"allow_download":"true"}}`)。値がアカウントの設定(ダウンロード許可)に依存するので未対応。
+3. ルートの無い v1.1 のホスト(ミュート、ブロック、DM、リスト作成など。11-b の 2)と、`x-twitter-active-user` の背景タブ(11-b の 4)。
+4. いいね・RT・ブロック・ミュートは実要求を見ていない(いいね・RT は本体のコードとは一致)。
+5. Referer、要求の前後関係(本体は投稿前後に `flow/timeline.json` などを送る)、Teams の `x-act-as-user-id`。構造上の差。
 
 ### Phase 11 のテスト
 
 - `tests/write-routes.test.cjs`(6 件): ルートの有無にかかわらず本体のヘッダになり TweetDeck の client version が出ないこと(アップロード先と他サイトの扱いも)、言語がページのアカウント言語(対応表つき)でそれまではブラウザの言語になること、CreateTweet の variables と順序(`dark_request` 無し、tweetstorm の `batch_compose`、引用、不正な返信先)、RT・RT 取消・削除・いいねの variables、登録表 off のときの ID と features が写した表と一致すること、セッション束縛の通知。
-- `tests/challenge.test.cjs`: デバイス ID は x.com のものだけを使い、作らないこと。
-- `node --test tests/*.test.cjs` は 160 件通過。
+- 11-c の分(同じファイルに 5 件): フォローと解除の URL・本文・content-type(代理、ID 既知、名前の解決失敗)、`md5Stream` が Node の MD5 と一致すること(大きさと切り方を変えて)、画像のアップロード(パス、`media_category`、断片の再送、FINALIZE の `original_md5` とその再送)、digest を付けない場合(順序違い、読めない断片、GIF、動画、STATUS)、作成欄の信号(未入力、入力、貼り付けのみ、修飾キー、送信後の数え直し、switch が false)。
+- `tests/challenge.test.cjs`: 以前のビルドが残したデバイス ID を消すこと。
+- `node --test tests/*.test.cjs` は 165 件通過。
 
 ---
 
