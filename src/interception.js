@@ -944,7 +944,8 @@ function rememberRetiredRest(path, status) {
     } catch (e) {
         // nothing to do: the next start asks REST again
     }
-    noteGraphqlDifference(`retired:${path}`, `${path} answered ${status}; ${RETIRED_REST_ANSWERS[path]} stands in for a day`);
+    const answered = status ? `answered ${status}` : "was refused before it reached X";
+    noteGraphqlDifference(`retired:${path}`, `${path} ${answered}; ${RETIRED_REST_ANSWERS[path]} stands in for a day`);
 }
 
 function useGraphqlFor(path) {
@@ -959,6 +960,47 @@ function noteRestRetirement(xhr) {
     const path = retirementKey(requestPath(xhr));
     if (!(path in RETIRED_REST_ANSWERS)) return;
     rememberRetiredRest(path, status);
+}
+
+// A REST request that Cloudflare stops is not a 404 or a 410. In the HARs of 2026-11-13 the CORS
+// preflight of api.x.com/2/timeline/conversation/<id>.json is answered 403 with "cf-mitigated:
+// challenge" (a page for a person to solve), so the request itself ends as a network error: an error event and
+// status 0, with nothing for noteRestRetirement to read. Legacy then drew the detail view without
+// replies, and without a word. Such a request is sent with this instead: when it fails that way,
+// the path is remembered like a retired one and this very request is answered by `standIn`, so
+// legacy sees one request that worked. Offline, the failure is legacy's as before. jQuery 2.1.4,
+// which sends legacy's requests, listens with onload and onerror only.
+function sendRestOrStandIn(xhr, body, path, standIn) {
+    const onload = xhr.onload;
+    const onerror = xhr.onerror;
+    const restore = () => {
+        xhr.onload = onload;
+        xhr.onerror = onerror;
+    };
+    const refused = (status) => {
+        restore();
+        rememberRetiredRest(path, status);
+        xhr.storage.graphql = true;
+        standIn(xhr);
+    };
+    xhr.onerror = function (event) {
+        if (typeof navigator !== "undefined" && navigator.onLine === false) {
+            restore();
+            if (onerror) onerror.call(this, event);
+            return;
+        }
+        refused(0);
+    };
+    xhr.onload = function (event) {
+        // the challenge page itself, should the browser ever hand it over
+        if (xhr.status === 403 && /text\/html/i.test(xhr.getResponseHeader?.("content-type") || "")) {
+            refused(403);
+            return;
+        }
+        restore();
+        if (onload) onload.call(this, event);
+    };
+    xhr.send(body);
 }
 
 function csrfToken() {
@@ -5345,15 +5387,18 @@ const proxyRoutes = [
         path: /\/2\/timeline\/conversation\/(\d+).json/,
         method: "GET",
         // REST while it answers (see "v1.1 endpoints x.com itself no longer calls"); TweetDetail,
-        // which x.com reads, once a 404 / 410 is remembered or with OTDpreferGraphql.
+        // which x.com reads, once a 404 / 410 or a refusal by Cloudflare (sendRestOrStandIn) is
+        // remembered, or with OTDpreferGraphql. The request that meets the refusal is answered
+        // from TweetDetail too.
         openHandler: deferOpen,
         beforeSend: (xhr) => {
             xhr.storage.graphql = useGraphqlFor("/2/timeline/conversation/{id}.json");
             if (!xhr.storage.graphql) openDeferred(xhr);
         },
         sendHandler: (xhr, body) => {
-            if (xhr.storage.graphql) answerConversationFromGraph(xhr, xhr.storage.tweet_id);
-            else xhr.send(body);
+            const fromGraph = () => answerConversationFromGraph(xhr, xhr.storage.tweet_id);
+            if (xhr.storage.graphql) fromGraph();
+            else sendRestOrStandIn(xhr, body, "/2/timeline/conversation/{id}.json", fromGraph);
         },
         beforeRequest: (xhr) => {
             let originalUrl = new URL(xhr.originalUrl);

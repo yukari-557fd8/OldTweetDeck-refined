@@ -22,6 +22,8 @@ function fakeXhrClass(responders = []) {
             if (match) setTimeout(() => this.respond(match[1].status ?? 200, JSON.stringify(match[1].body(new URL(this.url)))), 0);
         }
         respond(status, text) { this.readyState = 4; this.status = status; this.responseText = text; if (this.onload) this.onload(); }
+        // a request the browser gave up on (a refused CORS preflight, no network): an error event and status 0
+        fail() { this.readyState = 4; this.status = 0; this.responseText = ''; if (this.onerror) this.onerror(); }
         addEventListener() {}
         getResponseHeader() { return null; }
         getAllResponseHeaders() { return ''; }
@@ -48,7 +50,10 @@ async function legacyGet(context, url) {
     const xhr = new (vm.runInContext('XMLHttpRequest', context))();
     xhr.open('GET', url, true);
     xhr.setRequestHeader('x-act-as-user-id', '42');
-    const done = new Promise((resolve) => { xhr.onload = () => resolve({ status: xhr.status, text: xhr.responseText }); });
+    const done = new Promise((resolve) => {
+        xhr.onload = () => resolve({ status: xhr.status, text: xhr.responseText });
+        xhr.onerror = () => resolve({ status: xhr.status, text: xhr.responseText, error: true });
+    });
     await xhr.send(null);
     return { xhr, done };
 }
@@ -242,6 +247,58 @@ test('while REST answers, the conversation request goes out to it with the usual
     assert.equal(other.xhr.url, undefined);
     assert.equal((await other.done).status, 200);
     assert.equal(variablesOf(graphqlRequests(XHR)[0]).focalTweetId, '555');
+});
+
+test('a conversation request Cloudflare refuses is answered from TweetDetail on the spot, and the next ones go there directly', async () => {
+    const localStorage = {};
+    const detail = [/TweetDetail/, { body: () => tweetDetail() }];
+    const { context, XHR } = load({ localStorage, responders: [detail] });
+    const { xhr, done } = await legacyGet(context, CONVERSATION);
+    assert.match(xhr.url, /^https:\/\/api\.x\.com\/2\/timeline\/conversation\/100\.json/, 'REST is tried first');
+    xhr.fail(); // the preflight was answered 403 "cf-mitigated: challenge"
+    const answer = await done;
+    assert.equal(answer.error, undefined, 'legacy does not see the failure');
+    assert.equal(answer.status, 200);
+    assert.equal(variablesOf(graphqlRequests(XHR)[0]).focalTweetId, '100');
+    const entries = JSON.parse(answer.text).timeline.instructions[0].addEntries.entries;
+    assert.deepEqual(entries.map((e) => e.entryId), ['tweet-99', 'tweet-100', 'conversationThread-201', 'conversationThread-301']);
+    assert.equal(JSON.parse(localStorage.OTDretiredRest)['/2/timeline/conversation/{id}.json'].status, 0);
+    const other = await legacyGet(context, 'https://api.x.com/2/timeline/conversation/555.json?include_reply_count=true');
+    assert.equal(other.xhr.url, undefined, 'REST is left alone for a day');
+    assert.equal((await other.done).status, 200);
+    assert.equal(variablesOf(graphqlRequests(XHR)[1]).focalTweetId, '555');
+});
+
+test("the challenge page itself, a 403 that is HTML, is taken the same way; a JSON 403 is X's own answer", async () => {
+    const detail = [/TweetDetail/, { body: () => tweetDetail() }];
+    const page = load({ localStorage: {}, responders: [detail] });
+    const first = await legacyGet(page.context, CONVERSATION);
+    first.xhr.getResponseHeader = (name) => (name.toLowerCase() === 'content-type' ? 'text/html; charset=UTF-8' : null);
+    first.xhr.respond(403, '<!DOCTYPE html><title>Just a moment...</title>');
+    assert.equal((await first.done).status, 200);
+    assert.equal(graphqlRequests(page.XHR).length, 1);
+
+    const localStorage = {};
+    const json = load({ localStorage, responders: [detail] });
+    const second = await legacyGet(json.context, CONVERSATION);
+    second.xhr.getResponseHeader = (name) => (name.toLowerCase() === 'content-type' ? 'application/json;charset=utf-8' : null);
+    second.xhr.respond(403, '{"errors":[{"code":200,"message":"Forbidden."}]}');
+    assert.equal((await second.done).status, 403);
+    assert.equal(graphqlRequests(json.XHR).length, 0);
+    assert.equal(localStorage.OTDretiredRest, undefined);
+});
+
+test('offline, a failed conversation request stays a failure and nothing is remembered', async () => {
+    const localStorage = {};
+    const { context, XHR } = load({ localStorage, responders: [[/TweetDetail/, { body: () => tweetDetail() }]] });
+    context.navigator.onLine = false;
+    const { xhr, done } = await legacyGet(context, CONVERSATION);
+    xhr.fail();
+    const answer = await done;
+    assert.equal(answer.error, true);
+    assert.equal(answer.status, 0);
+    assert.equal(graphqlRequests(XHR).length, 0);
+    assert.equal(localStorage.OTDretiredRest, undefined);
 });
 
 // Better TweetDeck's question, as it sends it
