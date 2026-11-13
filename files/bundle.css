@@ -41658,3 +41658,44 @@ body:before {
 .js-mediatable .l-table {
     height: 100% !important;
 }
+
+/* OldTweetDeck: posts with more than four photos or videos (X allows twenty since 2026-11-12).
+   A grid shows the first four, and .media-grid-more says how many more the gallery holds. */
+.media-grid-4 {
+    position: relative;
+}
+/* !important because the cells carry .block, which is display: block !important */
+.media-grid-4 > .media-image-container:nth-child(n + 5) {
+    display: none !important;
+}
+.media-grid-more {
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    z-index: 1;
+    padding: 0 8px;
+    border-radius: 10px;
+    background: rgba(20, 23, 26, 0.75);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 20px;
+    pointer-events: none;
+}
+/* The composer with more than four attachments: every one stays in reach, four to a row. */
+.compose-media-grid-holder .media-grid-container.media-grid-container-many,
+html.dark .compose-media-grid-holder .media-grid-container.media-grid-container-many {
+    height: auto;
+    max-height: 236px;
+    overflow-y: auto;
+    border-radius: 4px;
+}
+.media-grid-many {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+    padding: 0;
+}
+.media-grid-many > .media-image-container {
+    aspect-ratio: 1;
+}

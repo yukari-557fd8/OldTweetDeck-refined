@@ -7975,7 +7975,7 @@ document.body.addEventListener("click", function (e) {
                 return e.messageRecipients.length >= e.attr.maxRecipients;
             },
             getMaxAllowedImages: function (e) {
-                return "message" === e.tweetType ? 1 : 4;
+                return "message" === e.tweetType ? 1 : e.scheduledDate ? 4 : 20;
             },
             shouldSetNewReplyTo: function (e) {
                 return !e.inReplyTo;
@@ -15448,7 +15448,7 @@ document.body.addEventListener("click", function (e) {
                 return "video/mp4" === e.type;
             }),
             (t.getMaxAllowedFiles = function () {
-                return 4;
+                return 20;
             }),
             (t.getMaxAllowedSize = function () {
                 return (arguments.length > 0 && void 0 !== arguments[0] ? arguments[0] : {}).bytes
@@ -17934,7 +17934,7 @@ document.body.addEventListener("click", function (e) {
         "use strict";
         i.r(t),
             (t.default =
-                '{{#isMediaGridContent}} <div class="compose-media-grid-holder bg-color-twitter-white padding-am margin-t---4"> <div class="media-grid-container"> <div class="media-grid-{{mediaLength}}"> {{#mediaInfo}} <div class="media-image-container block position-rel"> <div class="pin-all media-image br--4" style="background-image: url({{src}});" > <a class="js-media-bar-remove compose-media-grid-remove is-actionable" data-file-index="{{fileIndex}}"> {{>compose/close_button}} </a> {{>compose/image_description_field}} </div> </div> {{/mediaInfo}} </div> </div> </div> {{/isMediaGridContent}} {{^isMediaGridContent}} <div class="compose-media-bar-holder padding-al br-bottom br-bottom--4 margin-t---4"> <div class="compose-media-bar br--4"> <a class="js-media-bar-remove compose-media-bar-remove is-actionable z-index--1"> {{>compose/close_button}} </a> {{#isVideo}} {{#mediaInfo}} <div class="js-video"></div> {{/mediaInfo}} {{/isVideo}} {{^isVideo}} {{#mediaInfo}} <img class="js-media-bar-thumb compose-media-bar-thumb full-width br--14" alt="" src="{{src}}" data-file-index="{{fileIndex}}"> {{^isGif}} {{>compose/image_description_field}} {{/isGif}} {{/mediaInfo}} {{/isVideo}} </div> </div> {{/isMediaGridContent}}');
+                '{{#isMediaGridContent}} <div class="compose-media-grid-holder bg-color-twitter-white padding-am margin-t---4"> <div class="media-grid-container media-grid-container-{{mediaLength}}"> <div class="media-grid-{{mediaLength}}"> {{#mediaInfo}} <div class="media-image-container block position-rel"> <div class="pin-all media-image br--4" style="background-image: url({{src}});" > <a class="js-media-bar-remove compose-media-grid-remove is-actionable" data-file-index="{{fileIndex}}"> {{>compose/close_button}} </a> {{>compose/image_description_field}} </div> </div> {{/mediaInfo}} </div> </div> </div> {{/isMediaGridContent}} {{^isMediaGridContent}} <div class="compose-media-bar-holder padding-al br-bottom br-bottom--4 margin-t---4"> <div class="compose-media-bar br--4"> <a class="js-media-bar-remove compose-media-bar-remove is-actionable z-index--1"> {{>compose/close_button}} </a> {{#isVideo}} {{#mediaInfo}} <div class="js-video"></div> {{/mediaInfo}} {{/isVideo}} {{^isVideo}} {{#mediaInfo}} <img class="js-media-bar-thumb compose-media-bar-thumb full-width br--14" alt="" src="{{src}}" data-file-index="{{fileIndex}}"> {{^isGif}} {{>compose/image_description_field}} {{/isGif}} {{/mediaInfo}} {{/isVideo}} </div> </div> {{/isMediaGridContent}}');
     },
     function (e, t, i) {
         "use strict";
@@ -18945,13 +18945,13 @@ document.body.addEventListener("click", function (e) {
         "use strict";
         i.r(t),
             (t.default =
-                '{{#withMediaPreview}} {{#hasMedia}} {{#isMediaPreviewLarge}} <div class="js-media position-rel item-box-full-bleed margin-tm {{#isMediaGridContent}}media-size-large-height{{/isMediaGridContent}} {{#dataminr}}dataminr-large-preview{{/dataminr}}" data-key="{{id}}"> {{#isMediaGridContent}} <div class="media-caret"></div> <div class="media-grid-{{mediaLength}}"> {{#getMedia}} {{> status/media_image_container}} {{/getMedia}} </div> {{#isPossiblySensitive}} {{> status/media_sensitive}} {{/isPossiblySensitive}} {{/isMediaGridContent}} {{^isMediaGridContent}} {{#getMedia}} {{>status/media_thumb}} {{/getMedia}} {{/isMediaGridContent}} </div> {{/isMediaPreviewLarge}} {{/hasMedia}} {{/withMediaPreview}}');
+                '{{#withMediaPreview}} {{#hasMedia}} {{#isMediaPreviewLarge}} <div class="js-media position-rel item-box-full-bleed margin-tm {{#isMediaGridContent}}media-size-large-height{{/isMediaGridContent}} {{#dataminr}}dataminr-large-preview{{/dataminr}}" data-key="{{id}}"> {{#isMediaGridContent}} <div class="media-caret"></div> <div class="media-grid-{{mediaLength}}"> {{#getMedia}} {{> status/media_image_container}} {{/getMedia}} {{#moreMediaCount}}<span class="media-grid-more">+{{moreMediaCount}}</span>{{/moreMediaCount}} </div> {{#isPossiblySensitive}} {{> status/media_sensitive}} {{/isPossiblySensitive}} {{/isMediaGridContent}} {{^isMediaGridContent}} {{#getMedia}} {{>status/media_thumb}} {{/getMedia}} {{/isMediaGridContent}} </div> {{/isMediaPreviewLarge}} {{/hasMedia}} {{/withMediaPreview}}');
     },
     function (e, t, i) {
         "use strict";
         i.r(t),
             (t.default =
-                '{{#isMediaGridContent}} <div class="media-grid-{{mediaLength}}"> {{#getMedia}} {{> status/media_image_container}} {{/getMedia}} </div> {{#isPossiblySensitive}} {{> status/media_sensitive}} {{/isPossiblySensitive}} {{/isMediaGridContent}} {{^isMediaGridContent}} {{#getMedia}} {{> status/media_thumb}} {{/getMedia}} {{/isMediaGridContent}}');
+                '{{#isMediaGridContent}} <div class="media-grid-{{mediaLength}}"> {{#getMedia}} {{> status/media_image_container}} {{/getMedia}} {{#moreMediaCount}}<span class="media-grid-more">+{{moreMediaCount}}</span>{{/moreMediaCount}} </div> {{#isPossiblySensitive}} {{> status/media_sensitive}} {{/isPossiblySensitive}} {{/isMediaGridContent}} {{^isMediaGridContent}} {{#getMedia}} {{> status/media_thumb}} {{/getMedia}} {{/isMediaGridContent}}');
     },
     function (e, t, i) {
         "use strict";
@@ -18969,7 +18969,7 @@ document.body.addEventListener("click", function (e) {
         "use strict";
         i.r(t),
             (t.default =
-                '<div class="media-grid-{{mediaLength}}"> {{#getUniqueMedia}} {{{renderMediaGridView}}} {{/getUniqueMedia}} {{> status/media_sensitive}} </div>');
+                '<div class="media-grid-{{mediaLength}}"> {{#getUniqueMedia}} {{{renderMediaGridView}}} {{/getUniqueMedia}} {{#moreMediaCount}}<span class="media-grid-more">+{{moreMediaCount}}</span>{{/moreMediaCount}} {{> status/media_sensitive}} </div>');
     },
     function (e, t, i) {
         "use strict";
@@ -19029,7 +19029,7 @@ document.body.addEventListener("click", function (e) {
         "use strict";
         i.r(t),
             (t.default =
-                '{{#chirp}} {{#reasonText}} <div class="margin-bl padding-as srt-error-msg"> {{reasonText}} </div> {{/reasonText}} <div class="padding-b--5 flex flex-row flex-align--center"> <span class="no-wrap flex-grow--1 txt-size--13">{{ formattedTime }}</span> {{#canEdit}} <a href="#" rel="edit"><i class="icon icon-edit padding-r--10"></i></a> {{/canEdit}} <a href="#" rel="destroy"><i class="icon icon-trash"></i></a> </div> <div class="padding-al br--4 scheduled-tweet"> {{#updates}} {{>status/scheduled_tweet_single_header}} {{/updates}} <div class="txt-size-variable--12">{{{getReplyContext}}}</div> {{#hasText}} <p class="with-linebreaks">{{{htmlText}}} {{#attachmentUrl}}{{attachmentUrl}}{{/attachmentUrl}}</p> {{/hasText}} {{#hasMedia}} <div class="js-media media-preview position-rel media-size-medium {{#isMediaGridContent}}media-grid-container{{/isMediaGridContent}} {{#inBox}}is-hidden{{/inBox}}" data-key="{{id}}"> {{#isMediaGridContent}} <div class="media-grid-{{mediaLength}}"> {{#getMedia}} {{> status/media_image_container}} {{/getMedia}} </div> {{/isMediaGridContent}} {{^isMediaGridContent}} {{#getMedia}} {{>status/media_thumb}} {{/getMedia}} {{/isMediaGridContent}} </div> {{/hasMedia}} </div> {{/chirp}}');
+                '{{#chirp}} {{#reasonText}} <div class="margin-bl padding-as srt-error-msg"> {{reasonText}} </div> {{/reasonText}} <div class="padding-b--5 flex flex-row flex-align--center"> <span class="no-wrap flex-grow--1 txt-size--13">{{ formattedTime }}</span> {{#canEdit}} <a href="#" rel="edit"><i class="icon icon-edit padding-r--10"></i></a> {{/canEdit}} <a href="#" rel="destroy"><i class="icon icon-trash"></i></a> </div> <div class="padding-al br--4 scheduled-tweet"> {{#updates}} {{>status/scheduled_tweet_single_header}} {{/updates}} <div class="txt-size-variable--12">{{{getReplyContext}}}</div> {{#hasText}} <p class="with-linebreaks">{{{htmlText}}} {{#attachmentUrl}}{{attachmentUrl}}{{/attachmentUrl}}</p> {{/hasText}} {{#hasMedia}} <div class="js-media media-preview position-rel media-size-medium {{#isMediaGridContent}}media-grid-container{{/isMediaGridContent}} {{#inBox}}is-hidden{{/inBox}}" data-key="{{id}}"> {{#isMediaGridContent}} <div class="media-grid-{{mediaLength}}"> {{#getMedia}} {{> status/media_image_container}} {{/getMedia}} {{#moreMediaCount}}<span class="media-grid-more">+{{moreMediaCount}}</span>{{/moreMediaCount}} </div> {{/isMediaGridContent}} {{^isMediaGridContent}} {{#getMedia}} {{>status/media_thumb}} {{/getMedia}} {{/isMediaGridContent}} </div> {{/hasMedia}} </div> {{/chirp}}');
     },
     function (e, t, i) {
         "use strict";
@@ -19083,7 +19083,7 @@ document.body.addEventListener("click", function (e) {
         "use strict";
         i.r(t),
             (t.default =
-                '{{<stream_item}} {{$stream_item_data}} {{#chirp}} data-key="{{key}}{{id}}" data-account-key="{{#account}}{{getKey}}{{/account}}" data-tweet-id="{{#getMainTweet}}{{id}}{{/getMainTweet}}" {{/chirp}} {{/stream_item_data}} {{$content}} {{#chirp}} <div class="js-tweet tweet-detail {{#isFavorite}}is-favorite{{/isFavorite}} {{#isRetweeted}}is-retweet{{/isRetweeted}} {{#quotedTweet}}is-quote-tweet{{/quotedTweet}} {{#isInThread}}{{#hasReplies}}js-has-replies {{#indentedChirp}}margin-l--46{{/indentedChirp}}{{/hasReplies}}{{/isInThread}}"> <div class="{{^indentedChirp}}margin-b--10{{/indentedChirp}} {{#indentedChirp}}margin-l---46{{/indentedChirp}}"> {{#getMainUser}} {{> account_summary }} {{/getMainUser}} </div> {{^isInThread}} <div class="txt-size-variable--12 margin-b--2"> {{{getReplyContext}}} </div> {{/isInThread}} {{#indentedChirp}} <div class="thread margin-t--4"></div> {{/indentedChirp}} <p class="js-tweet-text tweet-text txt-size-variable--18 margin-b--10 with-linebreaks{{#translation}} tweet-translation-original-text margin-bn{{/translation}}{{#indentedChirp}} padding-t--10{{/indentedChirp}}" lang="{{lang}}">{{{htmlText}}}</p> {{#translation}}{{>status/tweet_translation}}{{/translation}} {{#isTranslatable}}{{^translation}}<a class="js-translate-call-to-action txt-mute" href="#" rel="translateTweet">{{_i}}Translate Tweet{{/i}}</a>{{/translation}}{{/isTranslatable}} {{#getMainTweet}} <div class="js-tweet-media tweet-detail-media margin-v--15 margin-h--0 is-hidden {{#user}}{{#isProtected}}is-protected{{/isProtected}}{{/user}}"></div> {{^hasMedia}} {{#quotedTweet}} {{{ renderQuoted }}} {{/quotedTweet}} {{/hasMedia}} {{#quotedTweetMissing}} {{! placeholder to be replaced when quoted tweet is fetched}} <div class="js-attachment-tweet"> {{>status/attachment_tweet}} </div> {{/quotedTweetMissing}} <div class="js-card-container"></div> <div class="margin-tl txt-mute txt-size-variable--12"> <a href="{{getChirpURL}}" rel="url" target="_blank">{{createdPrettyFull}}</a> &middot; <a href="{{sourceUrl}}" rel="url" target="_blank">{{sourceNoHTML}}</a> </div> {{#hasLocationData}} <div class="margin-bl txt-mute txt-size-variable--12 tweet-location"> <a href="{{getLocationURL}}" rel="url" target="_blank"><i class="icon icon-base-valigned icon-geo"></i>{{getLocationFullName}}</a> </div> {{/hasLocationData}} <footer> <div class="js-tweet-stats"></div> {{> status/tweet_detail_actions}} </footer> {{/getMainTweet}} </div> <div class="js-detail-view-inline detail-view-inline item-box-full-bleed padding-axl scroll-conversation {{^isInThread}}dark-border-top{{/isInThread}} {{#indentedChirp}}dark-border margin-l--46{{/indentedChirp}}"> <div rel="reply" class="js-detail-view-inline-text detail-view-inline-text padding-h--15 padding-v--10 inline-block full-width txt-ellipsis br--20">{{_i}}Reply to{{/i}} {{mentions}}</div> </div> {{#dataminr}} <a class="js-skip-to-replies is-hidden is-actionable link-complex block item-box-full-bleed padding-hxl padding-bl scroll-conversation" rel="skipToReplies"> &#8595; <span class="link-complex-target align-middle">{{_i}}Skip to replies{{/i}}</span> </a> {{/dataminr}} {{/chirp}} {{/content}} {{/stream_item}}');
+                '{{<stream_item}} {{$stream_item_data}} {{#chirp}} data-key="{{key}}{{id}}" data-account-key="{{#account}}{{getKey}}{{/account}}" data-tweet-id="{{#getMainTweet}}{{id}}{{/getMainTweet}}" {{/chirp}} {{/stream_item_data}} {{$content}} {{#chirp}} <div class="js-tweet tweet-detail {{#isFavorite}}is-favorite{{/isFavorite}} {{#isRetweeted}}is-retweet{{/isRetweeted}} {{#quotedTweet}}is-quote-tweet{{/quotedTweet}} {{#isInThread}}{{#hasReplies}}js-has-replies {{#indentedChirp}}margin-l--46{{/indentedChirp}}{{/hasReplies}}{{/isInThread}}"> <div class="{{^indentedChirp}}margin-b--10{{/indentedChirp}} {{#indentedChirp}}margin-l---46{{/indentedChirp}}"> {{#getMainUser}} {{> account_summary }} {{/getMainUser}} </div> {{^isInThread}} <div class="txt-size-variable--12 margin-b--2"> {{{getReplyContext}}} </div> {{/isInThread}} {{#indentedChirp}} <div class="thread margin-t--4"></div> {{/indentedChirp}} <p class="js-tweet-text tweet-text txt-size-variable--18 margin-b--10 with-linebreaks{{#translation}} tweet-translation-original-text margin-bn{{/translation}}{{#indentedChirp}} padding-t--10{{/indentedChirp}}" lang="{{lang}}">{{{htmlText}}}</p> {{#translation}}{{>status/tweet_translation}}{{/translation}} {{#isTranslatable}}{{^translation}}<a class="js-translate-call-to-action txt-mute" href="#" rel="translateTweet">{{_i}}Translate Tweet{{/i}}</a>{{/translation}}{{/isTranslatable}} {{#getMainTweet}} <div class="js-tweet-media tweet-detail-media margin-v--15 margin-h--0 is-hidden {{#user}}{{#isProtected}}is-protected{{/isProtected}}{{/user}}"></div> {{^hasMedia}} {{#quotedTweet}} {{{ renderQuoted }}} {{/quotedTweet}} {{/hasMedia}} {{#quotedTweetMissing}} {{! placeholder to be replaced when quoted tweet is fetched}} <div class="js-attachment-tweet"> {{>status/attachment_tweet}} </div> {{/quotedTweetMissing}} <div class="js-card-container"></div> <div class="margin-tl txt-mute txt-size-variable--12"> <a href="{{getChirpURL}}" rel="url" target="_blank">{{createdPrettyFull}}</a> {{#sourceNoHTML}}&middot; <a href="{{sourceUrl}}" rel="url" target="_blank">{{sourceNoHTML}}</a>{{/sourceNoHTML}} </div> {{#hasLocationData}} <div class="margin-bl txt-mute txt-size-variable--12 tweet-location"> <a href="{{getLocationURL}}" rel="url" target="_blank"><i class="icon icon-base-valigned icon-geo"></i>{{getLocationFullName}}</a> </div> {{/hasLocationData}} <footer> <div class="js-tweet-stats"></div> {{> status/tweet_detail_actions}} </footer> {{/getMainTweet}} </div> <div class="js-detail-view-inline detail-view-inline item-box-full-bleed padding-axl scroll-conversation {{^isInThread}}dark-border-top{{/isInThread}} {{#indentedChirp}}dark-border margin-l--46{{/indentedChirp}}"> <div rel="reply" class="js-detail-view-inline-text detail-view-inline-text padding-h--15 padding-v--10 inline-block full-width txt-ellipsis br--20">{{_i}}Reply to{{/i}} {{mentions}}</div> </div> {{#dataminr}} <a class="js-skip-to-replies is-hidden is-actionable link-complex block item-box-full-bleed padding-hxl padding-bl scroll-conversation" rel="skipToReplies"> &#8595; <span class="link-complex-target align-middle">{{_i}}Skip to replies{{/i}}</span> </a> {{/dataminr}} {{/chirp}} {{/content}} {{/stream_item}}');
     },
     function (e, t, i) {
         "use strict";
@@ -37415,9 +37415,9 @@ document.body.addEventListener("click", function (e) {
                 return TD.decider.get("multi_photo_media_grid") && this.getMedia().length > 1;
             }),
             (TD.services.ChirpBase.prototype.mediaLength = function () {
-                return this.getMedia().length;
+                return Math.min(this.getMedia().length, 4);
             }),
-            (TD.services.ChirpBase.prototype.hasImage = function () {
+            (TD.services.ChirpBase.prototype.moreMediaCount = function () { return Math.max(this.getMedia().length - 4, 0); }), (TD.services.ChirpBase.prototype.hasImage = function () {
                 return (
                     null === this._hasImage &&
                         (this._hasImage = this.getMedia().some(function (e) {
@@ -70519,7 +70519,7 @@ document.body.addEventListener("click", function (e) {
                 return "message" === e.tweetType;
             },
             getTooltipText: function (e) {
-                if (4 === s.default.getMaxAllowedImages(e)) {
+                if (1 < s.default.getMaxAllowedImages(e)) {
                     if (a(e)) return l.tooltipText.oneGIF;
                     if (o(e)) return l.tooltipText.oneVideo;
                 }
@@ -73873,7 +73873,7 @@ document.body.addEventListener("click", function (e) {
                         r = "video/mp4" === n,
                         o = h.default.render("compose/media_bar_image", {
                             isMediaGridContent: i,
-                            mediaLength: t,
+                            mediaLength: t > 4 ? "many" : t,
                             isVideo: r,
                             isGif: "image/gif" === n,
                             mediaInfo: this.getMediaInfo(),
