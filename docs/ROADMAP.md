@@ -582,6 +582,42 @@ HAR で分かったが手を付けていないもの:
 - 実機確認後の分(1 件): 名前から ID を引く要求が本体のプロフィール画面と同じ形とヘッダになること、答えと、カラムが表示したユーザーを覚えること。
 - `node --test tests/*.test.cjs` は 166 件通過。
 
+## Phase 12: 詳細ビューの会話取得の遮断、クライアント表示、20 件までのメディア(実装済み)
+
+**状態: 実装済み(2026-11-13)。実機確認 2026-11-13(詳細ビューの返信、20 件のポストのグリッドとギャラリー、7 枚の投稿)。** 変更は `src/interception.js`、`files/bundle.js`(同じ行の中の編集のみ、76373 行のまま)、`files/bundle.css`(末尾に追記)。テストは `tests/retired-rest.test.cjs` と `tests/many-media.test.cjs`。
+
+発端: 詳細ビューからクライアント表示(「Twitter for iPhone」など)が消えたことと、X が 2026-11-12 に 1 ポストのメディア上限を 4 件から 20 件に上げたことの調査。
+
+### 12-a. 確認した事実(2026-11-13 の HAR 5 本と、同日の未ログインでの確認)
+
+- 会話の REST が Cloudflare で止められている: `api.x.com/2/timeline/conversation/{id}.json` の CORS preflight(OPTIONS)が 403 `cf-mitigated: challenge`(人が解くチャレンジのページ)で返り、本体の GET は `net::ERR_FAILED`(ステータス 0)で終わる。TweetDeck の HAR 3 本の 5 回すべて。未ログインの確認でも、このパスだけが Cloudflare の HTML を返し、隣の REST(`/2/timeline/home.json`、`/2/notifications/mentions.json` など)は X のバックエンドまで届いて JSON のエラーを返した。
+- 10-h の切り替えは 404 / 410 だけを見ていたので働かず、詳細ビューは返信も祖先も出ないまま、トーストも出なかった(ステータス 0 は `network` 扱いで、起動後は通知しない)。
+- クライアント表示の出どころはこの REST だった: legacy の `TweetDetailView` は会話の応答の `root` で本体ツイートを描き直す(`files/bundle.js` 26181 行付近)。GraphQL のタイムラインが `source` を付けるのは RT の外側のツイートだけで、通常のツイート・引用・返信・RT 元には無い(2026-10-16 から 11-13 までの HAR すべて。x.com 本体の要求でも同じ)。`TweetDetail` の応答(200)にも、本体・返信とも `source` は無い。Web の GraphQL から戻す手段は見つかっていない。
+- 5 件以上のメディア: GraphQL は `legacy.extended_entities.media` と `entities.media` に従来と同じ形の項目を件数分(最大 20)並べる。t.co の URL と indices は全項目で共通、`expanded_url` は `/photo/1` から連番。写真と GIF の混在(19 + 1)も同じ配列に入る。新しいフィールドは無い。
+- x.com 本体の投稿(写真 5 枚、200): `CreateTweet` は同じクエリ ID・同じ variables で、`media.media_entities` が `{ media_id, tagged_users }` の 5 項目になるだけ。features に増えた鍵は無い。アップロードは 1 件ずつ従来の `/i/media/upload.json`、5 件に対して `media/metadata/create.json` が 10 回(11-c の残課題のまま)。
+- legacy の表示: グリッドの CSS は `.media-grid-2` から `.media-grid-4` までしか無く、5 件以上は各セルの高さが 0 になって空の枠だけが出る(同じ CSS をヘッドレスの Edge で描いて確認)。ギャラリー(`TD.components.MediaGallery`)は件数に上限が無く、前後に巡回する。
+
+### 12-b. 対応
+
+- 会話の要求(`sendRestOrStandIn`): REST が error イベント(ステータス 0)で終わるか、HTML の 403 が見えたら、`OTDretiredRest` に 404 / 410 と同じく 1 日覚え、**その要求自体**を `TweetDetail` から答える(legacy からは成功した 1 回の要求に見える)。以後 1 日は最初から `TweetDetail`。`navigator.onLine === false` のときは従来どおり legacy の失敗のままにし、何も覚えない。JSON の 403(X 自身の拒否)も従来どおり。対象は会話のパスだけ(リストやブロックの REST は、一時的な通信失敗で 1 日 GraphQL に切り替わると困るので広げていない)。
+- クライアント表示: `source` が無いツイートでは、詳細ビューの日時の後ろの「·」と空のリンクを出さない(`status/tweet_detail` のテンプレートを `{{#sourceNoHTML}}` で囲んだ)。`source` が来たツイートは従来どおり表示する。
+- 5 件以上のグリッド: `ChirpBase.prototype.mediaLength` を 4 で頭打ちにして 2×2 のグリッドを使い、5 件目以降のセルは CSS で隠す(DOM には残る)。`moreMediaCount` を足し、グリッドを描く 4 つのテンプレート(カラムの大・中小、予約投稿、詳細ビュー)の右下に「+N」を出す。クリックで開くギャラリーは全件を巡回する。
+- 作成欄: 添付の上限を 20 に(`getMaxAllowedFiles`、`getMaxAllowedImages`。DM は 1、予約投稿は 4 のまま)。「GIF・動画は単独」の判定は上限が 4 のときだけ働く書き方だったので、1 より大きいときに直した。5 件以上のプレビューは `media-grid-many`(4 列、236px を超えたら縦スクロール)で、全件に削除ボタンと説明欄が付く。送信側(`media_ids` → `media_entities`)は件数を見ていないので変更なし。
+
+### 12-c. 残課題
+
+- 実機(2026-11-13、ローカルのファイル、HAR 2 本): 20 件のポストはカラムで先頭 4 件(360x360)だけを読み、詳細ビューは `TweetDetail` 1 回(200、本体と返信 2 件。REST への要求は無し、失敗した要求は 0 件)、ギャラリーは 4 件目から 20 件目まで進んで 1 件目に戻った。作成欄から 7 枚を添付した投稿は、アップロード 7 件(INIT 202 / FINALIZE 201)、`CreateTweet` 200、`media_entities` 7 項目、応答のメディアも 7 件。
+- 実機で見ていないもの: REST が止められた**その要求**を差し替える経路(記録の時点では既に覚えていて、最初から `TweetDetail` だった。テストのみ)、「+N」の見た目と作成欄の 5 件以上のプレビュー(HAR には写らない)。
+- クライアント表示そのものは戻らない。REST が再び通るようになれば(1 日ごとに 1 回試す)、その間は戻る。
+- GIF・動画と写真の混在は legacy の作成欄では従来どおり不可(X は可)。予約投稿の 5 件以上は未確認のため 4 のまま。
+- 会話以外の `api.x.com` の REST が同じ止められ方をした場合は、起動時の一覧(リスト、ブロック、ミュート)が失敗する。今回の HAR では 200。
+
+### Phase 12 のテスト
+
+- `tests/retired-rest.test.cjs`(3 件追加): 止められた会話の要求がその場で `TweetDetail` から答えられ、次の会話は REST を通らないこと。HTML の 403 も同じ扱いで、JSON の 403 は X の答えのままであること。オフラインでは失敗のままで何も覚えないこと。
+- `tests/many-media.test.cjs`(8 件): `files/vendor.js` の Hogan で実際のテンプレートを描く。2 から 4 件は従来どおり、5・17・20 件は `media-grid-4` に全セルと「+N」、グリッドを描く全テンプレートに「+N」があること、CSS の規則、作成欄の上限(20 / 予約 4 / DM 1)、作成欄のプレビューの `many`、詳細ビューのクライアント表示の有無。
+- `node --test tests/*.test.cjs` は 177 件通過。
+
 ---
 
 ## 対応しない / できないもの
