@@ -618,6 +618,36 @@ HAR で分かったが手を付けていないもの:
 - `tests/many-media.test.cjs`(8 件): `files/vendor.js` の Hogan で実際のテンプレートを描く。2 から 4 件は従来どおり、5・17・20 件は `media-grid-4` に全セルと「+N」、グリッドを描く全テンプレートに「+N」があること、CSS の規則、作成欄の上限(20 / 予約 4 / DM 1)、作成欄のプレビューの `many`、詳細ビューのクライアント表示の有無。
 - `node --test tests/*.test.cjs` は 177 件通過。
 
+## Phase 13: ユーザーのタイムラインの応答の場所が `timeline_v2` から `timeline` に変わった(実装済み)
+
+**状態: 実装済み(2026-11-17)。実機未確認(HAR の応答を修正後のルートに通して確認)。** 変更は `src/interception.js`(`userTimelineOf` と、それを読む 2 ルート)。テストは `tests/timeline-routes.test.cjs`。
+
+発端: プロフィールを開いて「Tweets」を押すと、カラムが空のまま「X returned an error for User columns (GraphQL error).」のトーストが出る。
+
+### 13-a. 確認した事実(2026-11-17 の HAR 2 本。記録は 16 日 16:11〜16:12 UTC)
+
+- TweetDeck の `UserTweetsAndReplies` は 3 回とも 200(約 220 KB)。クエリ ID(`FmuxExUC21Xn_C2NwtX5sQ`)と features 42 鍵はレジストリのまま、エラーも無い。変わったのは応答の場所だけで、`data.user.result.timeline_v2.timeline` が `data.user.result.timeline.timeline` になった(`result` の鍵は `__typename` と `timeline` の 2 つ)。中身(`TimelineClearCache` / `TimelinePinEntry` / `TimelineAddEntries`、`tweet-` と `profile-conversation-` のエントリ、Top / Bottom の cursor)は従来どおり。要求は `withV2Timeline: true` を付けたままなので、この変数はもう形を選んでいない。
+- x.com 本体(`main.f87257a9919f147fa.js`)は、プロフィールのどのタブでも(`fetchUserTweets` / `fetchUserTweetsAndReplies` / `fetchUserOriginals` / `fetchLikes` / `fetchUserMedia` など)`user.result.timeline?.timeline` だけを読む。HAR の全バンドルで `timeline_v2` が残っているのは Bookmarks の `bookmark_timeline_v2` だけ。
+- x.com のプロフィールの最初のタブは新しい操作 `UserOriginalsTimeline`(`ZFKu1DFS63hgrkLzR3Hsdw`)になっていた。variables は `userId` / `count` / `includePromotedContent` / `withQuickPromoteEligibilityTweetFields` / `withVoice`(`withV2Timeline` は無い)、fieldToggles は `withPayments` と `withArticlePlainText`。応答の場所は同じ `timeline.timeline`。`UserTweetsAndReplies` と `UserTweets`(`D6z-FJI2pKuwEeYYxVIGbg`)の宣言は main.js に残っている。
+- OTD 側で起きていたこと: `graphqlPageInspector` が「タイムラインの無い 200」と見て 503 にし、トーストを出していた。legacy は失敗として扱うので、開いているあいだ約 5 秒おきに全ページ(220 KB)を取り直していた(16:11:25 / :31 / :36)。Likes のルート(`favorites/list.json`)は同じ場所を読むが検査が無いので、黙って 0 件になる(HAR には無い。main.js の `fetchLikes` からの推定)。
+- デプロイは写した表の `main.b7fce08c…` から `main.f87257a9…` に変わっているが、HAR に写っている 12 操作(Home、通知、CreateTweet、TweetDetail、Search、Likes、User 系 4、List、Bookmarks)の ID は表と同じ。
+
+### 13-b. 対応
+
+- `userTimelineOf(data)`: `result.timeline.timeline` を先に、無ければ従来の `result.timeline_v2.timeline` を読む。`statuses/user_timeline.json`(検査と変換)と `favorites/list.json`(変換)がこれを使う。要求は変えていない(200 で通っている)。
+- 確認: HAR の 3 応答を修正前のルートに通すと 503 と 0 件(報告のとおり)、修正後は 3 つとも 18 件(返信 14、投稿 3、RT 1。スレッドの中の他人の投稿と who-to-follow は従来どおり落ちる)。
+
+### 13-c. 残課題
+
+- 実機確認: ユーザーのカラム(プロフィール →「Tweets」、追加した User カラム、下へのスクロール)と Likes のカラム。
+- `withV2Timeline` は x.com がもう送っていない変数。X が未知の変数を拒否するようになったら外す(いまは無害)。Likes の要求の variables は 2023 年のまま(`withSuperFollowsUserFields` など)で、実際の応答は今回見ていない。
+- 同じ改名が他の操作に来た場合: Home(`home.home_timeline_urt`)、List(`list.tweets_timeline.timeline`、`list.members_timeline.timeline`)、ミュート(`viewer.muting_timeline.timeline`)は今回の本体バンドルの読み方と一致。Bookmarks は本体も `bookmark_timeline_v2` のまま。検索・詳細ビュー・通知を読むチャンクはこの HAR に無い。
+
+### Phase 13 のテスト
+
+- `tests/timeline-routes.test.cjs`(3 件追加): ユーザーのタイムラインが新旧どちらの場所でも失敗扱いにならず、ピン留め・スレッド・who-to-follow・cursor を含むページから同じ投稿を返すこと。タイムラインの無い 200(エラーだけ、`UserUnavailable`、空)は従来どおり 503 になること。Likes が新旧どちらの場所でも読めること。
+- `node --test tests/*.test.cjs` は 180 件通過。
+
 ---
 
 ## 対応しない / できないもの
