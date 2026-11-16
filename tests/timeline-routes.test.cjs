@@ -60,6 +60,68 @@ test('user timeline without a bottom cursor does not throw', () => {
     assert.deepEqual(Array.from(tweets, t => t.id_str), ['1']);
 });
 
+// X moved the timeline of UserTweetsAndReplies and Likes from data.user.result.timeline_v2 to
+// data.user.result.timeline (HARs of 2026-11-16, and all x.com's main.js reads). The page is the
+// recorded one cut down: a pinned post, a thread module, a who-to-follow module and the cursors.
+function userPage(key, entries, more = []) {
+    return { data: { user: { result: { __typename: 'User', [key]: { timeline: {
+        instructions: [{ type: 'TimelineClearCache' }, ...more, { type: 'TimelineAddEntries', entries }],
+        metadata: { scribeConfig: { page: 'profileAll' } },
+    } } } } } };
+}
+const answered = (data, storage) => ({ status: 200, responseText: JSON.stringify(data), storage });
+
+test('user timeline reads the page X now answers under result.timeline', () => {
+    const route = loadRoutes()('/1.1/statuses/user_timeline.json');
+    const alice = author('7', 'alice');
+    const entries = [
+        { entryId: 'profile-conversation-90', content: { items: [
+            { entryId: 'profile-conversation-90-tweet-3', item: { itemContent: { tweet_results: { result: tweetResult('3', author('8', 'bob'), 'asked') } } } },
+            { entryId: 'profile-conversation-90-tweet-4', item: { itemContent: { tweet_results: { result: tweetResult('4', alice, 'answered') } } } },
+        ] } },
+        entry('2', tweetResult('2', alice, 'a post')),
+        { entryId: 'who-to-follow-91', content: { items: [{ entryId: 'who-to-follow-91-user-5', item: { itemContent: { user_results: { result: author('5', 'carol') } } } }] } },
+        cursor('top', 'TOP'), cursor('bottom', 'BOTTOM'),
+    ];
+    const pin = { type: 'TimelinePinEntry', entry: { entryId: 'tweet-1', content: { itemContent: { tweet_results: { result: tweetResult('1', alice, 'pinned') } } } } };
+    for (const key of ['timeline', 'timeline_v2']) {
+        const xhr = answered(userPage(key, entries, [pin]), { user_id: '7' });
+        route.inspectResponse(xhr);
+        assert.equal(xhr._status, undefined, `${key}: the page must not be failed`);
+        assert.equal(xhr.storage.failure, undefined);
+        assert.deepEqual(Array.from(route.afterRequest(xhr), t => t.id_str), ['4', '2'], key);
+    }
+});
+
+test('user timeline still fails a 200 that carries no timeline', () => {
+    const route = loadRoutes()('/1.1/statuses/user_timeline.json');
+    const bodies = [
+        { errors: [{ message: 'Timeout: Unspecified' }], data: { user: { result: { __typename: 'User' } } } },
+        { data: { user: { result: { __typename: 'UserUnavailable' } } } },
+        { data: { user: {} } },
+    ];
+    for (const body of bodies) {
+        const xhr = answered(body, { user_id: '7' });
+        route.inspectResponse(xhr);
+        assert.equal(xhr._status, 503);
+        assert.equal(xhr.storage.failure.kind, 'x-error');
+        assert.deepEqual(Array.from(route.afterRequest(xhr)), []);
+    }
+});
+
+test('likes read the page X now answers under result.timeline', () => {
+    const route = loadRoutes()('/1.1/favorites/list.json');
+    const entries = [
+        entry('1', tweetResult('1', author('10', 'alice'), 'older')),
+        entry('2', tweetResult('2', author('11', 'bob'), 'newer')),
+        cursor('top', 'TOP'), cursor('bottom', 'BOTTOM'),
+    ];
+    for (const key of ['timeline', 'timeline_v2']) {
+        const tweets = route.afterRequest(answered(userPage(key, entries), { user_id: '7' }));
+        assert.deepEqual(Array.from(tweets, t => t.id_str), ['2', '1'], key);
+    }
+});
+
 test('search drops a muted author and a promoted entry', () => {
     const route = loadRoutes()('/1.1/search/universal.json');
     const muted = author('8', 'muted');

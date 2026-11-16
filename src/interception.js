@@ -1810,6 +1810,16 @@ function graphqlPageInspector(timelineOf) {
     };
 }
 
+// The timeline of a user's posts or likes (UserTweetsAndReplies, Likes). X answered it as
+// data.user.result.timeline_v2.timeline until 2026-11; in the HARs of 2026-11-16 it is
+// data.user.result.timeline.timeline, the only place x.com's own main.js reads (for every profile
+// tab). The request still carried withV2Timeline: true, so that variable no longer chooses the
+// shape. The old place is kept for as long as X might answer with it somewhere.
+function userTimelineOf(data) {
+    const result = data?.data?.user?.result;
+    return result?.timeline?.timeline || result?.timeline_v2?.timeline || null;
+}
+
 // ---- telling the user why requests fail -------------------------------------------------------
 
 // Legacy shows nothing when a column's request fails. At startup it shows "Error initializing
@@ -3900,7 +3910,7 @@ const proxyRoutes = [
     {
         path: "/1.1/statuses/user_timeline.json",
         method: "GET",
-        inspectResponse: graphqlPageInspector((data) => data?.data?.user?.result?.timeline_v2?.timeline),
+        inspectResponse: graphqlPageInspector(userTimelineOf),
         beforeRequest: (xhr) => {
             try {
                 let url = new URL(xhr.modUrl);
@@ -4019,7 +4029,7 @@ const proxyRoutes = [
                     return [];
                 }
             }
-            let instructions = data?.data?.user?.result?.timeline_v2?.timeline?.instructions;
+            let instructions = userTimelineOf(data)?.instructions;
             let entries = instructions?.find((e) => e.type === "TimelineAddEntries");
             if (!entries) {
                 return [];
@@ -4551,7 +4561,7 @@ const proxyRoutes = [
             // if (data.errors && data.errors[0]) {
             //     return [];
             // }
-            let instructions = data?.data?.user?.result?.timeline_v2?.timeline?.instructions;
+            let instructions = userTimelineOf(data)?.instructions;
             let entries = instructions?.find((e) => e.type === "TimelineAddEntries");
             if (!entries) {
                 return [];
