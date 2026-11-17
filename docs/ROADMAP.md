@@ -163,7 +163,7 @@ Phase 1 の副作用を先に潰すために扱った。変更は f8dc681(`src/i
 | #520 "Twitter for Advertisers" 経由の投稿が Home から消える | `tweet.source` による除外。公式アカウントが広告ツールで投稿すると消える | 実装済み。source 判定は廃止。`entryId` に `promoted` を含むものか `promotedMetadata` があるものだけ除外 |
 | #520 続き / #435 動画 unified card | 画像 unified card は summary card に変換済み。動画は TweetDeck が再生できない unified card のまま | 実装済み。動画と animated_gif は `extended_entities.media` のネイティブ動画にする。mp4 の variant が無いカードはそのまま |
 | #563 動画が再生できない(2026-10-14) | 再生ウィンドウは `video_info.variants` の `video/mp4` のうち最高ビットレートを使う(`bundle.js` の `chooseVideoVariant`)。`bundle.js` は変えていない | 実機確認は問題なし(2026-10-17) |
-| #497 長文の「see more」 | 長文は常に全文へ置き換えていた。TweetDeck は末尾が「…」のときだけ Expand tweet を出す | 実装済み。`OTDenableAutoExpand` が OFF のときは省略のまま。ON のときと、Expand が叩く `statuses/show` は全文 |
+| #497 長文の「see more」 | 長文は常に全文へ置き換えていた。TweetDeck は末尾が「…」のときだけ Expand tweet を出す | 実装済み。`OTDenableAutoExpand` が OFF のときは省略のまま。ON のときと、Expand が叩く `statuses/show` は全文。X が「…」を付けなくなっていてリンクが出ていなかった件は Phase 14 |
 | #427 / #387 / #131 ミュート・ブロックが残る | Home と List だけが著者を落としていた | 実装済み。`tweetHidden` を Home / List / Search / 通知 / Mentions / 会話詳細に適用。RT の元著者も落とす。ミュートした人の引用は引用部分だけ外す。ユーザーカラムとブックマークは対象外 |
 | #496 センシティブ設定のアカウントが Home に出ない | OTD に `possibly_sensitive` で落とす処理は無い。コメントの「Home が更新されない」は Phase 1 の症状と重なる | 実機確認は問題なし(2026-10-17) |
 
@@ -620,7 +620,7 @@ HAR で分かったが手を付けていないもの:
 
 ## Phase 13: ユーザーのタイムラインの応答の場所が `timeline_v2` から `timeline` に変わった(実装済み)
 
-**状態: 実装済み(2026-11-17)。実機未確認(HAR の応答を修正後のルートに通して確認)。** 変更は `src/interception.js`(`userTimelineOf` と、それを読む 2 ルート)。テストは `tests/timeline-routes.test.cjs`。
+**状態: 実装済み(2026-11-17)。実機確認 2026-11-17(push 後にユーザーが動作を確認)。** 変更は `src/interception.js`(`userTimelineOf` と、それを読む 2 ルート)。テストは `tests/timeline-routes.test.cjs`。
 
 発端: プロフィールを開いて「Tweets」を押すと、カラムが空のまま「X returned an error for User columns (GraphQL error).」のトーストが出る。
 
@@ -639,7 +639,8 @@ HAR で分かったが手を付けていないもの:
 
 ### 13-c. 残課題
 
-- 実機確認: ユーザーのカラム(プロフィール →「Tweets」、追加した User カラム、下へのスクロール)と Likes のカラム。
+- 実機(2026-11-17): push(74f6686)のあと、ユーザーから動作 OK の報告。HAR は無く、項目ごとの内訳(下へのスクロール、Likes のカラム)は聞いていない。Likes の応答の形は main.js からの推定のまま。
+- push の直後は古いファイルが配られる: raw.githubusercontent.com は `Cache-Control: max-age=300` で答えるので、push から 5 分ほど(ブラウザ自身のキャッシュを含めると最長 10 分ほど)は `OTDalwaysUseLocalFiles` を消すと修正前の main が読まれる。今回、push の 4 分後に消して「動かなくなった」になり、時間を置いて直った。
 - `withV2Timeline` は x.com がもう送っていない変数。X が未知の変数を拒否するようになったら外す(いまは無害)。Likes の要求の variables は 2023 年のまま(`withSuperFollowsUserFields` など)で、実際の応答は今回見ていない。
 - 同じ改名が他の操作に来た場合: Home(`home.home_timeline_urt`)、List(`list.tweets_timeline.timeline`、`list.members_timeline.timeline`)、ミュート(`viewer.muting_timeline.timeline`)は今回の本体バンドルの読み方と一致。Bookmarks は本体も `bookmark_timeline_v2` のまま。検索・詳細ビュー・通知を読むチャンクはこの HAR に無い。
 
@@ -647,6 +648,41 @@ HAR で分かったが手を付けていないもの:
 
 - `tests/timeline-routes.test.cjs`(3 件追加): ユーザーのタイムラインが新旧どちらの場所でも失敗扱いにならず、ピン留め・スレッド・who-to-follow・cursor を含むページから同じ投稿を返すこと。タイムラインの無い 200(エラーだけ、`UserUnavailable`、空)は従来どおり 503 になること。Likes が新旧どちらの場所でも読めること。
 - `node --test tests/*.test.cjs` は 180 件通過。
+
+## Phase 14: 省略された長文に「Expand tweet」が出ない(実装済み)
+
+**状態: 実装済み(2026-11-18)。実機確認 2026-11-18(ローカルのファイルでユーザーが動作を確認)。** 変更は `src/interception.js`(`noteTweetIsCut` / `markCutNoteTweet` と `parseTweet`)、`files/bundle.js`(3 か所を同一行内で書き換え。行数は 76373 のまま)。テストは `tests/parse-tweet.test.cjs` と `tests/long-tweets.test.cjs`(新規)。
+
+発端: 長文ポストが途切れて表示される(2026-11-18 の報告。この件の HAR は無い)。
+
+### 14-a. 確認した事実(2026-11-13 の HAR 4 本: `x.com-tweetdeck-1` / `-3` / `-4` / `-5`)
+
+- `HomeLatestTimeline` に長文(`note_tweet` あり)が 10 件写っていた。10 件とも `note_tweet.is_expandable` は true で、`legacy.full_text` は文の途中で切れたまま、**末尾に「…」が無い**。表示範囲(`display_text_range`)は 119 から 280 コードポイントで、8 件はその後ろに範囲外のメディアのリンク(` https://t.co/…`)が続く。全文は `note_tweet.note_tweet_results.result.text` にある(返信の先頭の「@名前 」は含まない)。
+- legacy が「Expand tweet」を付ける条件は、末尾の t.co を除いたテキストが「…」で終わり、かつ長さが 100 以上 400 未満(`files/bundle.js` の `_generateHTMLText`。upstream の 797c3b1、2023-09-20)。当時の X は切った本文を「…」で終えていた。Phase 3(31dc3bc)はこの条件を前提に「自動展開が OFF なら省略のまま」にしたが、テストの入力は「…」付きの想定で書かれていて、実際の応答とは照合していなかった。X がいつ「…」をやめたかは分からない。
+- その結果: 自動展開(設定の「Enable tweet auto expand (OldTweetDeck)」、`OTDenableAutoExpand`)が OFF(既定)のとき、他人の長文はどのカラムでも途中で切れ、切れていることを示すものもリンクも出ない。10 件を修正前の `parseTweet` に通すと、リンクの条件を満たすものは 0 件。
+- 引用された長文は、自動展開の設定や自分の投稿かどうかに関係なく、常に切れたままだった(`parseTweet` は引用先の `note_tweet` を読んでいなかった)。
+- x.com 本体(`main.js`)は `note_tweet.is_expandable` を見て「Show more」を出す。本文の「…」には頼っていない。
+
+### 14-b. 対応
+
+- `parseTweet` は長文を 1 か所(`presentNoteTweet`)で扱う。対象は本体、RT 先、引用先、RT 先の引用先。全文にする条件は従来どおり(自動展開が ON、自分のアカウントの投稿、`statuses/show`)で、引用先にも同じ条件を当てる。
+- 全文にしないときは、切れている長文に印を付ける(`markCutNoteTweet`)。表示範囲の末尾(メディアのリンクの手前)に「…」を入れ、`display_text_range` の終端と、それより後ろのエンティティ(`entities` と `extended_entities` の `indices`。コードポイント単位)を 1 つずらし、`otd_long_tweet_cut: true` を持たせる。切れているかどうかは `is_expandable`、無い応答では全文と表示範囲の長さの比較で決める(`noteTweetIsCut`)。太字などで `note_tweet` が付くだけの、全文が収まっている投稿には付けない。
+- `files/bundle.js`: `fromJSONObject` が印を `isLongTweetCut` として持ち、`_generateHTMLText` は印があれば長さに関係なくリンクを出す(RT は RT 先の印を見る)。印の無いテキストは従来の条件のまま。
+- `expandTweet`(リンクのクリック): 応答に `full_text` が無いとき(`statuses/show` のルートは X がエラーを返すと `{}` を返す)に本文を空に書き換えていたので、本文を残して「Error」にする。応答の途中(readyState 2 / 3)で一瞬「Error」を出していたのもやめた。
+- 確認: 記録された 10 件(RT として 6、引用として 1 を含む 17 か所)を修正前後の `parseTweet` に通した。修正前はリンクの条件を満たすものが 0、修正後は 17 か所すべてで満たし、エンティティの位置は全件でテキストと一致。自動展開 ON では全文(印なし)。
+
+### 14-c. 残課題
+
+- 実機(2026-11-18): ユーザーから確認できたとの報告。HAR は無く、項目ごとの内訳(「…」と「Expand tweet」の表示、クリックで全文になること、引用された長文の中のリンクを押したときに引用先の詳細ビューが開かないこと)は聞いていない。
+- クリック後の取得(`statuses/show/<id>.json` → `TweetDetail`)は、2026-11-13 の HAR で通常の投稿に対して 200(`x.com-tweetdeck-1.har`)。長文に対する応答は HAR の記録が無い(x.com 本体の詳細ページは同じ操作で全文を出している)。
+- 展開しても chirp の `text` は省略のまま(表示だけを書き換える。従来どおり)。
+- 「Expand tweet」のリンク先の URL は RT のとき RT した側のスクリーンネームになる(upstream のまま。ID は RT 先なので x.com 側で正しいポストに転送される)。
+
+### Phase 14 のテスト
+
+- `tests/parse-tweet.test.cjs`(3 件追加、2 件を実際の形に書き換え): 切れた長文に「…」と印が付き、範囲とメディアの位置がずれること(絵文字を含む)、2 回通しても「…」は 1 つ、範囲もフラグも無い応答は長さで判定、収まっている装飾付き投稿は触らない、引用先と RT 先の引用先。
+- `tests/long-tweets.test.cjs`(6 件): 印のある chirp は長さに関係なくリンクが出る、RT は RT 先の ID、印の無い chirp は従来の条件、`fromJSONObject` が印を写す、クリックは 1 回だけ取得して全文に置き換える、全文が来なかったときは本文を残す。
+- `node --test tests/*.test.cjs` は 189 件通過。
 
 ---
 
