@@ -368,6 +368,49 @@ function parseNoteTweet(result) {
     return { text, entities };
 }
 
+// Whether the text in `legacy` is only the start of a long post. `is_expandable` is what x.com
+// reads before it offers "Show more"; the lengths are compared for an answer without the flag.
+// The whole text has no leading "@name " of a reply, hence the displayed range.
+function noteTweetIsCut(result, legacy) {
+    const note = result.note_tweet;
+    if (note.is_expandable === true) return true;
+    const whole = (note.note_tweet_results.result || note.note_tweet_results).text;
+    if (typeof whole !== "string") return false;
+    const range = legacy.display_text_range;
+    const shown = Array.isArray(range) ? range[1] - range[0] : Array.from(legacy.full_text || "").length;
+    return Array.from(whole).length > shown;
+}
+
+// TweetDeck offers "Expand tweet" under a text that ends in "…" (files/bundle.js,
+// _generateHTMLText), which is how X ended the cut text of a long post. It no longer does (all
+// 10 long posts recorded on 2026-11-13 stop mid-sentence), so a post left cut looked complete.
+// The "…" goes back where the displayed text ends, before the media link, and what follows it
+// moves one place on; indices and the range count code points. `otd_long_tweet_cut` tells the
+// bundle outright, whatever the length of the text.
+function markCutNoteTweet(legacy) {
+    const chars = Array.from(legacy.full_text || "");
+    const range = Array.isArray(legacy.display_text_range) ? legacy.display_text_range : null;
+    const end = range ? Math.min(range[1], chars.length) : chars.length;
+    if (chars[end - 1] !== "…") {
+        chars.splice(end, 0, "…");
+        legacy.full_text = chars.join("");
+        if (range) legacy.display_text_range = [range[0], end + 1];
+        const moved = new Set();
+        for (const entities of [legacy.entities, legacy.extended_entities]) {
+            for (const list of Object.values(entities || {})) {
+                if (!Array.isArray(list)) continue;
+                for (const entity of list) {
+                    if (!Array.isArray(entity?.indices) || entity.indices[0] < end || moved.has(entity)) continue;
+                    entity.indices = [entity.indices[0] + 1, entity.indices[1] + 1];
+                    moved.add(entity);
+                }
+            }
+        }
+    }
+    legacy.text = legacy.full_text;
+    legacy.otd_long_tweet_cut = true;
+}
+
 // A legacy summary card from a link, a title, a text and an image (summary_large_image with the
 // image, summary without): what TweetDeck's card renderer reads for a link preview.
 function summaryCard({ url, title, description, vanity, image }) {
@@ -660,6 +703,21 @@ function parseTweet(res, options) {
     const expandSetting = options?.expandNotes ?? localStorage.OTDenableAutoExpand === "1";
     const own = ownAccountIds();
     const expandNotesFor = (userId) => expandSetting || own.has(String(userId || ""));
+    // `legacy` is the tweet, the retweeted one or a quoted one; `result` is what it came in.
+    // statuses/show, which Expand tweet asks, passes expandNotes.
+    const presentNoteTweet = (legacy, result) => {
+        if (!legacy || !result?.note_tweet?.note_tweet_results) return;
+        if (!expandNotesFor(legacy.user_id_str)) {
+            if (noteTweetIsCut(result, legacy)) markCutNoteTweet(legacy);
+            return;
+        }
+        const note = parseNoteTweet(result);
+        if (typeof note.text !== "string") return;
+        legacy.full_text = note.text;
+        legacy.text = note.text;
+        legacy.entities = note.entities;
+        legacy.display_text_range = undefined; // no text range for long tweets
+    };
     try {
 
         if (typeof res !== "object") return;
@@ -717,6 +775,7 @@ function parseTweet(res, options) {
                 presentCard(result.legacy.quoted_status, result.quoted_status_result.result.card);
                 result.legacy.quoted_status.id = +result.legacy.quoted_status.id_str;
                 result.legacy.quoted_status.text = result.legacy.quoted_status.full_text;
+                presentNoteTweet(result.legacy.quoted_status, result.quoted_status_result.result);
                 result.legacy.quoted_status.conversation_id = +result.legacy.quoted_status.conversation_id_str;
                 if (result.legacy.quoted_status) {
                     result.legacy.quoted_status.user =
@@ -749,27 +808,13 @@ function parseTweet(res, options) {
             } else {
                 console.warn("No retweeted status", result);
             }
-            // With autoexpand off, leave the truncated text. It ends in "…" and
-            // TweetDeck adds an Expand tweet link. statuses/show passes expandNotes.
-            if (tweet.retweeted_status && expandNotesFor(tweet.retweeted_status.user_id_str) && result.note_tweet && result.note_tweet.note_tweet_results) {
-                let note = parseNoteTweet(result);
-                tweet.retweeted_status.full_text = note.text;
-                tweet.retweeted_status.text = note.text;
-                tweet.retweeted_status.entities = note.entities;
-                tweet.retweeted_status.display_text_range = undefined; // no text range for long tweets
-            }
+            presentNoteTweet(tweet.retweeted_status, result);
         }
-    
+
         if (res.quoted_status_result) {
             tweet.quoted_status_result = res.quoted_status_result;
         }
-        if (expandNotesFor(tweet.user_id_str) && res.note_tweet && res.note_tweet.note_tweet_results) {
-            let note = parseNoteTweet(res);
-            tweet.full_text = note.text;
-            tweet.text = note.text;
-            tweet.entities = note.entities;
-            tweet.display_text_range = undefined; // no text range for long tweets
-        }
+        presentNoteTweet(tweet, res);
         if (tweet.quoted_status_result && tweet.quoted_status_result.result) {
             let result = tweet.quoted_status_result.result;
             if (!result.core && result.tweet) result = result.tweet;
@@ -790,6 +835,7 @@ function parseTweet(res, options) {
                 tweet.quoted_status.id = +tweet.quoted_status.id_str;
                 tweet.quoted_status.conversation_id = +tweet.quoted_status.conversation_id_str;
                 tweet.quoted_status.text = tweet.quoted_status.full_text;
+                presentNoteTweet(tweet.quoted_status, result);
                 if (tweet.quoted_status) {
                     let user_result = result.core?.user_results?.result;
                     // Same as above: the author's fields live outside `legacy` now.

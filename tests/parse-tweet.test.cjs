@@ -105,23 +105,94 @@ test('quoted author without a legacy object is rebuilt from core/avatar', () => 
     assert.equal(tweet.quoted_status.user.id_str, '9');
 });
 
-function noteTweet(text) {
-    const truncated = 'short preview … https://t.co/aaaaaaaaaa';
+// A long post as HomeLatestTimeline answers it (2026-11-13): `full_text` is the start of the text,
+// stopped mid-sentence with no "…", then the media link outside the displayed range; the whole
+// text is in `note_tweet`. Indices count code points (the 😀 is one).
+const CUT = 'short 😀 preview #tag';
+const CUT_SHOWN = 'short 😀 preview #tag… https://t.co/aaaaaaaaaa';
+function noteTweet(text, { id = '70', expandable = true } = {}) {
+    const media = () => ({ id_str: '9', type: 'photo', url: 'https://t.co/aaaaaaaaaa', media_url_https: 'https://pbs.twimg.com/media/a.jpg', indices: [21, 44] });
     return {
-        __typename: 'Tweet', rest_id: '70',
+        __typename: 'Tweet', rest_id: id,
         core: { user_results: { result: user('1', 'alice') } },
-        legacy: { id_str: '70', conversation_id_str: '70', full_text: truncated, user_id_str: '1', entities: {} },
-        note_tweet: { note_tweet_results: { result: { text, entity_set: { hashtags: [], urls: [], user_mentions: [] } } } },
+        legacy: {
+            id_str: id, conversation_id_str: id, full_text: CUT + ' https://t.co/aaaaaaaaaa', user_id_str: '1', display_text_range: [0, 20],
+            entities: { hashtags: [{ text: 'tag', indices: [16, 20] }], urls: [], user_mentions: [], media: [media()] },
+            extended_entities: { media: [media()] },
+        },
+        note_tweet: { is_expandable: expandable, note_tweet_results: { result: { id: 'Tm90ZQ==', text, entity_set: { hashtags: [], urls: [], user_mentions: [] } } } },
     };
 }
 
-test('a long tweet stays truncated unless autoexpand is on', () => {
+test('a long tweet stays cut unless autoexpand is on, and says so with the "…" X no longer sends', () => {
     const full = 'word '.repeat(80).trim();
-    const collapsed = loadParseTweet()(noteTweet(full));
-    assert.equal(collapsed.full_text, 'short preview … https://t.co/aaaaaaaaaa');
+    const parse = loadParseTweet();
+    const source = noteTweet(full);
+    const collapsed = parse(source);
+    assert.equal(collapsed.full_text, CUT_SHOWN);
+    assert.equal(collapsed.text, CUT_SHOWN);
+    assert.equal(collapsed.otd_long_tweet_cut, true);
+    // the displayed range takes the "…" in; the hashtag before it stays, the media link after it moves
+    assert.deepEqual(Array.from(collapsed.display_text_range), [0, 21]);
+    assert.deepEqual(Array.from(collapsed.entities.hashtags[0].indices), [16, 20]);
+    assert.deepEqual(Array.from(collapsed.entities.media[0].indices), [22, 45]);
+    assert.deepEqual(Array.from(collapsed.extended_entities.media[0].indices), [22, 45]);
+    assert.equal(Array.from(collapsed.full_text).slice(22, 45).join(''), 'https://t.co/aaaaaaaaaa');
+    // what TweetDeck looks for before it adds "Expand tweet" (files/bundle.js)
+    assert.ok(collapsed.text.replace(/\shttps:\/\/t.co\/[a-zA-Z0-9\-]{8,10}$/, '').endsWith('…'));
+    // the same tweet parsed again gets no second "…"
+    assert.equal(parse(source).full_text, CUT_SHOWN);
+
     const expanded = loadParseTweet({ OTDenableAutoExpand: '1' })(noteTweet(full));
     assert.equal(expanded.full_text, full);
     assert.equal(expanded.text, full);
+    assert.equal(expanded.otd_long_tweet_cut, undefined);
+});
+
+test('a long tweet without a display range or the flag is told by its length', () => {
+    const full = 'word '.repeat(80).trim();
+    const source = noteTweet(full);
+    delete source.note_tweet.is_expandable;
+    delete source.legacy.display_text_range;
+    source.legacy.full_text = CUT;
+    source.legacy.entities.media = [];
+    delete source.legacy.extended_entities;
+    const tweet = loadParseTweet()(source);
+    assert.equal(tweet.full_text, CUT + '…');
+    assert.equal(tweet.display_text_range, undefined);
+    assert.equal(tweet.otd_long_tweet_cut, true);
+});
+
+test('a formatted post that fits is not marked as cut', () => {
+    // bold or italic text makes a note_tweet of a post of any length; nothing is missing from it
+    const source = noteTweet(CUT, { expandable: false });
+    const tweet = loadParseTweet()(source);
+    assert.equal(tweet.full_text, CUT + ' https://t.co/aaaaaaaaaa');
+    assert.equal(tweet.otd_long_tweet_cut, undefined);
+    assert.deepEqual(Array.from(tweet.entities.media[0].indices), [21, 44]);
+});
+
+test('a quoted long tweet is whole or marked as cut like any other', () => {
+    const full = 'word '.repeat(80).trim();
+    const quoting = () => {
+        const res = tweetResult('100', user('2', 'bob'), 'look at this');
+        res.legacy.is_quote_status = true;
+        res.quoted_status_result = { result: noteTweet(full) };
+        return res;
+    };
+    const collapsed = loadParseTweet()(quoting());
+    assert.equal(collapsed.otd_long_tweet_cut, undefined);
+    assert.equal(collapsed.quoted_status.text, CUT_SHOWN);
+    assert.equal(collapsed.quoted_status.otd_long_tweet_cut, true);
+    assert.equal(loadParseTweet({ OTDenableAutoExpand: '1' })(quoting()).quoted_status.text, full);
+    assert.equal(loadParseTweet({ twitterAccountID: '1' })(quoting()).quoted_status.text, full);
+
+    // and the tweet quoted by a retweeted tweet
+    const retweeted = () => retweetOf(quoting());
+    const inRetweet = loadParseTweet()(retweeted());
+    assert.equal(inRetweet.retweeted_status.quoted_status.text, CUT_SHOWN);
+    assert.equal(inRetweet.retweeted_status.quoted_status.otd_long_tweet_cut, true);
+    assert.equal(loadParseTweet({ OTDenableAutoExpand: '1' })(retweeted()).retweeted_status.quoted_status.text, full);
 });
 
 test("one's own long tweets are always whole, so Better TweetDeck's Re-draft keeps all of the text", () => {
@@ -133,13 +204,14 @@ test("one's own long tweets are always whole, so Better TweetDeck's Re-draft kee
     assert.equal(own.display_text_range, undefined);
     // someone else's stays truncated
     const other = loadParseTweet({ twitterAccountID: '2' })(noteTweet(full));
-    assert.equal(other.full_text, 'short preview … https://t.co/aaaaaaaaaa');
+    assert.equal(other.full_text, CUT_SHOWN);
     // a retweet of one's own long tweet too
-    const retweet = () => { const r = tweetResult('71', user('5', 'eve'), 'RT @alice: short preview …'); r.legacy.retweeted_status_result = { result: noteTweet(full) }; return r; };
+    const retweet = () => { const r = tweetResult('71', user('5', 'eve'), 'RT @alice: short preview'); r.legacy.retweeted_status_result = { result: noteTweet(full) }; return r; };
     const asRetweet = loadParseTweet({ twitterAccountID: '1' })(retweet());
     assert.equal(asRetweet.retweeted_status.full_text, full);
     const asOtherRetweet = loadParseTweet({ twitterAccountID: '2' })(retweet());
-    assert.equal(asOtherRetweet.retweeted_status.full_text, 'short preview … https://t.co/aaaaaaaaaa');
+    assert.equal(asOtherRetweet.retweeted_status.full_text, CUT_SHOWN);
+    assert.equal(asOtherRetweet.retweeted_status.otd_long_tweet_cut, true);
 });
 
 test('a video unified card becomes native video media', () => {

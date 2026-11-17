@@ -50,11 +50,11 @@ function expandTweet(e, tweet_id) {
     xhr.withCredentials = true;
 
     xhr.onreadystatechange = function () {
-        if (xhr.readyState === 4 && xhr.status === 200) {
-            var data = JSON.parse(xhr.responseText);
-            e.target.parentElement.innerHTML = TD.util.transform(data.full_text, data.entities);
-            e.target.remove();
-        } else {
+        if (xhr.readyState !== 4) return;
+        var data = null; try { if (xhr.status === 200) data = JSON.parse(xhr.responseText); } catch (error) {}
+        if (data && typeof data.full_text === "string") e.target.parentElement.innerHTML = TD.util.transform(data.full_text, data.entities);
+        else {
+            // an answer without the text (X returned errors) must not blank the tweet
             e.target.innerText = "Error";
             e.target.style.color = "red";
         }
@@ -37586,7 +37586,7 @@ document.body.addEventListener("click", function (e) {
                     (this.likeCount = e.favorite_count),
                     (this.replyCount = e.reply_count ?? 0),
                     (this.currentUserRetweet = e.current_user_retweet),
-                    (this.possiblySensitive = e.possibly_sensitive),
+                    (this.possiblySensitive = e.possibly_sensitive), (this.isLongTweetCut = Boolean(e.otd_long_tweet_cut)),
                     (this.inReplyToID = e.in_reply_to_status_id_str || e.in_reply_to_status_id);
                 var t = (0, u.default)(e, "retweeted_status.self_thread.id_str", !1);
                 return (
@@ -37731,11 +37731,11 @@ document.body.addEventListener("click", function (e) {
             (TD.services.TwitterStatus.prototype._generateHTMLText = function () {
                 this.htmlText = TD.util.transform(this.text, this.entities);
                 let cleanText = this.text.replace(/\shttps:\/\/t.co\/[a-zA-Z0-9\-]{8,10}$/, "");
-                if (cleanText.endsWith("…")) {
-                    if (this.text.length >= 100 && this.text.length < 400) {
-                        let id = this.retweetedStatus ? this.retweetedStatus.id : this.id;
-                        this.htmlText += ` <a href="https://twitter.com/${this.user.screenName}/status/${id}" onclick="expandTweet(event, '${id}')" class="expand-tweet" data-clicked="false">Expand tweet</a>`;
-                    }
+                // interception.js says which long posts it left cut (isLongTweetCut); the "…" and the
+                // length are the older guess, for a text that comes without that word
+                let cut = (this.retweetedStatus || this).isLongTweetCut, guessed = cleanText.endsWith("…") && this.text.length >= 100 && this.text.length < 400;
+                if (cut || guessed) { let id = this.retweetedStatus ? this.retweetedStatus.id : this.id;
+                    this.htmlText += ` <a href="https://twitter.com/${this.user.screenName}/status/${id}" onclick="expandTweet(event, '${id}')" class="expand-tweet" data-clicked="false">Expand tweet</a>`;
                 }
             }),
             (TD.services.TwitterStatus.prototype.getMainUser = function () {
