@@ -651,7 +651,7 @@ HAR で分かったが手を付けていないもの:
 
 ## Phase 14: 省略された長文に「Expand tweet」が出ない(実装済み)
 
-**状態: 実装済み(2026-11-18)。実機確認 2026-11-18(ローカルのファイルでユーザーが動作を確認)。** 変更は `src/interception.js`(`noteTweetIsCut` / `markCutNoteTweet` と `parseTweet`)、`files/bundle.js`(3 か所を同一行内で書き換え。行数は 76373 のまま)。テストは `tests/parse-tweet.test.cjs` と `tests/long-tweets.test.cjs`(新規)。
+**状態: 実装済み(2026-11-18)。実機確認 2026-11-18(「Expand tweet」の表示とクリックでの全文表示をユーザーが確認)。** 変更は `src/interception.js`(`noteTweetIsCut` / `markCutNoteTweet` と `parseTweet`)、`files/bundle.js`(3 か所を同一行内で書き換え。行数は 76373 のまま)。テストは `tests/parse-tweet.test.cjs` と `tests/long-tweets.test.cjs`(新規)。
 
 発端: 長文ポストが途切れて表示される(2026-11-18 の報告。この件の HAR は無い)。
 
@@ -673,7 +673,7 @@ HAR で分かったが手を付けていないもの:
 
 ### 14-c. 残課題
 
-- 実機(2026-11-18): ユーザーから確認できたとの報告。HAR は無く、項目ごとの内訳(「…」と「Expand tweet」の表示、クリックで全文になること、引用された長文の中のリンクを押したときに引用先の詳細ビューが開かないこと)は聞いていない。
+- 実機(2026-11-18): ユーザーの報告では、「Expand tweet」が表示され、クリックすると全文が表示された(HAR は無い)。引用された長文の中のリンクを押したときに引用先の詳細ビューが開かないことは、報告に含まれていない(未確認)。
 - クリック後の取得(`statuses/show/<id>.json` → `TweetDetail`)は、2026-11-13 の HAR で通常の投稿に対して 200(`x.com-tweetdeck-1.har`)。長文に対する応答は HAR の記録が無い(x.com 本体の詳細ページは同じ操作で全文を出している)。
 - 展開しても chirp の `text` は省略のまま(表示だけを書き換える。従来どおり)。
 - 「Expand tweet」のリンク先の URL は RT のとき RT した側のスクリーンネームになる(upstream のまま。ID は RT 先なので x.com 側で正しいポストに転送される)。
