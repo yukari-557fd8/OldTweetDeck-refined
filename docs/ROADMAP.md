@@ -713,6 +713,34 @@ HAR で分かったが手を付けていないもの:
 - `tests/retired-rest.test.cjs`(1 件追加): 返信スレッドのあとに「もっと見つける」が 2 つ(同じ投稿者と別の投稿者)あっても、エントリと `globalObjects` は返信スレッドだけの場合と同じ。返信の無い投稿では本人の 1 件だけになる。修正前のコードでは落ちる。
 - `node --test tests/*.test.cjs` は 190 件通過。
 
+## Phase 16: いいね済みのツイートの RT で、いいね数が 1 と表示される(実装済み、実機未確認)
+
+**状態: 実装済み(2026-11-18)。実機未確認。** 変更は `src/interception.js`(`parseTweet` の末尾)。テストは `tests/parse-tweet.test.cjs`。
+
+発端: Notifications で、自分が RT したものにいいねされた通知のいいね数が 1 になる。RT 数は正しい(2026-11-18 の報告)。
+
+### 16-a. 確認した事実(2026-11-18 の `x.com-tweetdeck-7.har`)
+
+- X の GraphQL は RT そのもの(RT した側のツイート)の `favorite_count` を常に 0 で返す。`retweet_count` と `favorited` / `retweeted` は RT 先の値がそのまま入る。記録にある RT 53 件(`HomeLatestTimeline` 51、`NotificationsTimeline` 2)すべてでそうなっていた。返信数も RT 側は 0。
+- `users_liked_your_retweet` / `users_retweeted_your_retweet` の通知の対象は RT 側のツイートで、今回は RT 側が「いいね 0、RT 7、`favorited: true`」、RT 先が「いいね 113、RT 7」。
+- legacy はカラムの数字を出すとき、ツイート自身のいいね数が 0 なら RT 先の数を読む(`_addPrettyEngagementCounts`。返信数も同じ。RT 数は自身の値だけ)。
+- OTD 側で起きていたこと: `parseTweet` の末尾に「いいね済みなのに 0 件なら 1 件にする」補正がある(upstream から。X の集計が遅れているときのため)。RT 側は「いいね済み、0 件」になるので 1 が書かれ、legacy は RT 先の数を読まずに 1 を出していた。自分が RT したものは自分でもいいねしていることが多いので、この通知でほぼ毎回起きる。
+- 通知に限らない。Home でも、いいね済みのツイートを誰かが RT した行は同じく 1 になっていた(記録では 51 件中 1 件)。
+
+### 16-b. 対応
+
+- いいね数の補正は、RT のときは RT 先にだけ掛ける(RT 側の 0 はそのまま残し、legacy に RT 先の数を読ませる)。RT 数の補正は、legacy が RT 側の値だけを読むので両方に掛ける。RT 先が取得できなかった RT は従来どおり RT 側に掛ける。
+- 確認: 記録された応答を修正前後の `parseTweet` に通した。通知 2 件は「いいね 1、RT 7、返信 3」が「いいね 113、RT 7、返信 3」になる。Home のいいね済みの RT 1 件は 1 が 113 になり、残りの 109 件は変わらない。
+
+### 16-c. 残課題
+
+- 通知の文言は「〜 liked」のまま。legacy には「〜 liked your Retweet」を出す `favorited_retweet` / `retweeted_retweet` のアクションがあるが、OTD は upstream のとおり `favorite` / `retweet` として渡している(変えるとカラムのフィルターと通知の ID が変わる)。
+
+### Phase 16 のテスト
+
+- `tests/parse-tweet.test.cjs`(2 件追加): いいね済みの RT は RT 先のいいね数が出る、RT 数はそのまま、X の集計が 0 のときは RT 先と RT 数が 1 になる、RT ではないツイートと RT 先が取れない RT は従来どおり。1 件目は修正前のコードでは落ちる。
+- `node --test tests/*.test.cjs` は 192 件通過。
+
 ---
 
 ## 対応しない / できないもの
