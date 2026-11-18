@@ -713,9 +713,9 @@ HAR で分かったが手を付けていないもの:
 - `tests/retired-rest.test.cjs`(1 件追加): 返信スレッドのあとに「もっと見つける」が 2 つ(同じ投稿者と別の投稿者)あっても、エントリと `globalObjects` は返信スレッドだけの場合と同じ。返信の無い投稿では本人の 1 件だけになる。修正前のコードでは落ちる。
 - `node --test tests/*.test.cjs` は 190 件通過。
 
-## Phase 16: いいね済みのツイートの RT で、いいね数が 1 と表示される(実装済み、実機未確認)
+## Phase 16: いいね済みのツイートの RT で、いいね数が 1 と表示される(実装済み)
 
-**状態: 実装済み(2026-11-18)。実機未確認。** 変更は `src/interception.js`(`parseTweet` の末尾)。テストは `tests/parse-tweet.test.cjs`。
+**状態: 実装済み(2026-11-18)。実機確認 2026-11-18(ユーザーの報告。HAR は無く、Notifications と Home のどちらを見たかは聞いていない)。** 変更は `src/interception.js`(`parseTweet` の末尾)。テストは `tests/parse-tweet.test.cjs`。
 
 発端: Notifications で、自分が RT したものにいいねされた通知のいいね数が 1 になる。RT 数は正しい(2026-11-18 の報告)。
 
