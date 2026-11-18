@@ -684,6 +684,35 @@ HAR で分かったが手を付けていないもの:
 - `tests/long-tweets.test.cjs`(6 件): 印のある chirp は長さに関係なくリンクが出る、RT は RT 先の ID、印の無い chirp は従来の条件、`fromJSONObject` が印を写す、クリックは 1 回だけ取得して全文に置き換える、全文が来なかったときは本文を残す。
 - `node --test tests/*.test.cjs` は 189 件通過。
 
+## Phase 15: 詳細ビューの返信に x.com の「もっと見つける」が混ざる(実装済み)
+
+**状態: 実装済み(2026-11-18)。実機確認 2026-11-18(ローカルのファイルで、同じツイートの詳細ビューから混ざった投稿が消えたことをユーザーが確認)。** 変更は `src/interception.js`(`isReplyThreadEntry` と `conversationFromTweetDetail`)。テストは `tests/retired-rest.test.cjs`。
+
+発端: ツイートを押して詳細ビューを開くと、X 本体の「もっと見る」の投稿が混ざって表示される(2026-11-18 の報告。`x.com-tweetdeck-7.har`)。
+
+### 15-a. 確認した事実(2026-11-18 の HAR と、2026-11-13 の HAR 3 本)
+
+- 開いたツイートに返信は無く、`TweetDetail`(200)のエントリは 3 つ: `tweet-<id>`、`tweetdetailrelatedtweets-<id>` のモジュール、`cursor-bottom-`。このモジュールが x.com の詳細ページの下に出る「もっと見つける」(英語では Discover more)で、`displayType` は `Vertical`、`header.text` が「もっと見つける」、`header.socialContext.text` が「Xから」、`clientEventInfo.component` は `related_tweet`、`conversationSection` は `RelatedTweet`。中身は `TimelineTweet` のアイテム 1 件で、同じ投稿者の別の会話の投稿だった(`conversation_id_str` が自分自身の ID、返信先なし)。
+- 返信スレッドのモジュールは `conversationthread-<id>` で、`displayType` は `VerticalConversation`、`clientEventInfo.component` は `tweet`、`header` は無い。アイテムの `conversation_id_str` は開いたツイートの会話と同じ。
+- 記録にある `TweetDetail` の応答 4 件のうち 2 件に「もっと見つける」がある(今回と、2026-11-13 の `x.com-tweetdeck-1.har`。後者は返信 1 件の下に別の会話の投稿が 1 件)。残り 2 件(`-4` / `-5`、同じツイート)には無い。要求の `with_rux_injections: false` と `includePromotedContent: false` を付けていても入ってくる。
+- OTD 側で起きていたこと: `conversationFromTweetDetail`(10-h)は `items` を持つエントリをすべて返信スレッドとして `conversationThread-<id>` にしていたので、おすすめの投稿が返信の位置に出ていた。10-h のテストの入力(2026-10-25 の形)にこのモジュールは無い。REST が Cloudflare に拒否されるようになって(Phase 12)詳細ビューが常に `TweetDetail` から組み立てられるので、このモジュールが付いた投稿では毎回混ざる。
+
+### 15-b. 対応
+
+- `conversationFromTweetDetail` は `entryId` が `conversationthread-` で始まるモジュールだけを返信スレッドとして読む(`isReplyThreadEntry`)。それ以外のモジュールは読まず、中の投稿と投稿者も `globalObjects` に入れない。legacy の詳細ビューにはおすすめを置く場所が無いので、「もっと見つける」は表示しない。
+- 確認: 記録された 4 応答を修正前後のルートに通した。今回のツイートは「本人 + 別の会話の投稿 1 件」が「本人だけ」に、11-13 の 1 件は「本人 + 返信 1 + 別の会話の投稿 1」が「本人 + 返信 1」になる。残り 2 件(本人 + 返信スレッド 2 本)は変わらない。
+
+### 15-c. 残課題
+
+- X が返信スレッドのモジュールの `entryId` を変えると、返信が 1 件も出なくなる(失敗の表示は出ない)。そのときは `displayType: VerticalConversation` か、アイテムの `conversation_id_str` が開いたツイートと同じことを目印にできる。
+- モジュールではない単独のエントリは従来どおり、投稿を持つものをすべて祖先か本人として読む。`tweet-<id>` 以外に投稿を持つ単独のエントリは記録に無い。
+- REST(`/2/timeline/conversation/{id}.json`)が答える環境でおすすめが混ざるかは見ていない(このアカウントでは Cloudflare に拒否されて常に `TweetDetail` になる)。
+
+### Phase 15 のテスト
+
+- `tests/retired-rest.test.cjs`(1 件追加): 返信スレッドのあとに「もっと見つける」が 2 つ(同じ投稿者と別の投稿者)あっても、エントリと `globalObjects` は返信スレッドだけの場合と同じ。返信の無い投稿では本人の 1 件だけになる。修正前のコードでは落ちる。
+- `node --test tests/*.test.cjs` は 190 件通過。
+
 ---
 
 ## 対応しない / できないもの
