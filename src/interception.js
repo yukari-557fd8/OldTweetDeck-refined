@@ -1248,6 +1248,11 @@ const HELP_CONFIGURATION = {
 // opens its own conversation. x.com reads TweetDetail instead, whose page has the same things as
 // tweet-<id> items, conversationthread-<id> modules of TimelineTweet items with a
 // TimelineTimelineCursor item for "show more", and cursor entries. Shapes from 2026-10-25.
+// The page also carries x.com's "Discover more" (もっと見つける), a tweetdetailrelatedtweets-<id>
+// module of posts from other conversations (2 of the 4 pages recorded 2026-11-13 to 11-18 have
+// one). Legacy has no place for it and would show its posts as replies, so only the
+// conversationthread- modules are read.
+const isReplyThreadEntry = (entry) => /^conversationthread-/i.test(String(entry?.entryId || ""));
 const TWEET_DETAIL_FIELD_TOGGLES = { withArticleRichContentState: true, withArticlePlainText: false, withGrokAnalyze: false, withDisallowedReplyControls: false };
 
 function conversationFromTweetDetail(data, focalId) {
@@ -1275,6 +1280,7 @@ function conversationFromTweetDetail(data, focalId) {
         if (!content) continue;
         const sortIndex = String(entry.sortIndex || "");
         if (Array.isArray(content.items)) {
+            if (!isReplyThreadEntry(entry)) continue;
             const conversationComponents = [];
             let showMoreCursor;
             for (const item of content.items) {

@@ -234,6 +234,38 @@ test("the detail view comes from TweetDetail in legacy's conversation shape when
     assert.equal(body.timeline.id, 'Conversation-100');
 });
 
+// x.com's "Discover more" under a post, as recorded on 2026-11-18: a module like a reply thread's,
+// but of posts from other conversations (here another post by the same author).
+const relatedModule = (id, author) => ({
+    entryId: 'tweetdetailrelatedtweets-' + id, sortIndex: '40',
+    content: {
+        entryType: 'TimelineTimelineModule', __typename: 'TimelineTimelineModule', displayType: 'Vertical',
+        header: { displayType: 'Classic', text: 'Discover more', socialContext: { type: 'TimelineGeneralContext', contextType: 'TextOnly', text: 'Sourced from across X' }, sticky: true },
+        clientEventInfo: { component: 'related_tweet', details: { conversationDetails: { conversationSection: 'RelatedTweet' } } },
+        items: [{ entryId: `tweetdetailrelatedtweets-${id}-tweet-${id}`, item: { itemContent: tweetItem(id, author, 'Tweet', { conversation_id_str: id }) } }],
+    },
+});
+
+test("x.com's Discover more under a post is not shown among the replies", async () => {
+    const page = tweetDetail();
+    const entries = page.data.threaded_conversation_with_injections_v2.instructions[1].entries;
+    entries.splice(entries.length - 1, 0, relatedModule('900', gUser('7')), relatedModule('901', gUser('11')));
+    const { context } = load({ localStorage: { OTDpreferGraphql: '1' }, responders: [[/TweetDetail/, { body: () => page }]] });
+    const body = JSON.parse((await (await legacyGet(context, CONVERSATION)).done).text);
+    assert.deepEqual(body.timeline.instructions[0].addEntries.entries.map((e) => e.entryId), ['tweet-99', 'tweet-100', 'conversationThread-201', 'conversationThread-301']);
+    assert.deepEqual(Object.keys(body.globalObjects.tweets).sort(), ['100', '201', '202', '301', '99']);
+    assert.deepEqual(Object.keys(body.globalObjects.users).sort(), ['7', '8', '9']);
+
+    // a post with no reply at all, which is what the recorded page was: the post alone
+    const alone = tweetDetail();
+    const aloneEntries = alone.data.threaded_conversation_with_injections_v2.instructions[1].entries;
+    aloneEntries.splice(0, aloneEntries.length, aloneEntries[1], relatedModule('900', gUser('7')), aloneEntries[aloneEntries.length - 1]);
+    const second = load({ localStorage: { OTDpreferGraphql: '1' }, responders: [[/TweetDetail/, { body: () => alone }]] });
+    const aloneBody = JSON.parse((await (await legacyGet(second.context, CONVERSATION)).done).text);
+    assert.deepEqual(aloneBody.timeline.instructions[0].addEntries.entries.map((e) => e.entryId), ['tweet-100']);
+    assert.deepEqual(Object.keys(aloneBody.globalObjects.tweets), ['100']);
+});
+
 test('while REST answers, the conversation request goes out to it with the usual cleanup; a 410 is remembered for every conversation', async () => {
     const localStorage = {};
     const detail = [/TweetDetail/, { body: () => tweetDetail() }];
