@@ -870,13 +870,20 @@ function parseTweet(res, options) {
             tweet.birdwatch = res.birdwatch_pivot;
         }
     
-        if (tweet.favorited && tweet.favorite_count === 0) {
-            tweet.favorite_count = 1;
+        // A tweet the account liked or retweeted has at least that one, whatever count X sends.
+        // A retweet is told apart: X sends its own favorite_count as 0 and its `favorited` as the
+        // retweeted tweet's, and legacy shows the retweeted tweet's likes when the retweet's are 0
+        // (_addPrettyEngagementCounts). A 1 written there would be shown in place of the real count.
+        const retweeted = tweet.retweeted_status;
+        for (const status of retweeted ? [tweet, retweeted] : [tweet]) {
+            if (status.favorited && status.favorite_count === 0 && !(retweeted && status === tweet)) {
+                status.favorite_count = 1;
+            }
+            if (status.retweeted && status.retweet_count === 0) {
+                status.retweet_count = 1;
+            }
         }
-        if (tweet.retweeted && tweet.retweet_count === 0) {
-            tweet.retweet_count = 1;
-        }
-    
+
         return tweet;
     } catch (e) {
         console.error('error parsing tweet', e, res);

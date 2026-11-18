@@ -44,6 +44,51 @@ test('plain retweet keeps working', () => {
     assert.equal(tweet.retweeted_status.user.screen_name, 'alice');
 });
 
+// What legacy shows under a tweet in a column (TwitterStatus._addPrettyEngagementCounts in
+// files/bundle.js): the retweeted tweet's likes when the tweet's own count is 0.
+function shownLikes(tweet) {
+    return parseInt(tweet.favorite_count || tweet.retweeted_status?.favorite_count, 10) || 0;
+}
+
+// NotificationsTimeline and HomeLatestTimeline, 2026-11-18: a retweet's own favorite_count is 0,
+// its retweet_count and `favorited` / `retweeted` are the retweeted tweet's.
+test('a retweet of a tweet the account liked shows the likes of the retweeted tweet', () => {
+    const counted = (liked, likes, retweets) => {
+        const inner = tweetResult('100', user('1', 'alice'), 'hello world');
+        Object.assign(inner.legacy, { favorite_count: likes, retweet_count: retweets, favorited: liked, retweeted: true });
+        const res = retweetOf(inner);
+        Object.assign(res.legacy, { favorite_count: 0, retweet_count: retweets, favorited: liked, retweeted: true });
+        return loadParseTweet()(res);
+    };
+    const liked = counted(true, 113, 7);
+    assert.equal(liked.favorite_count, 0);
+    assert.equal(shownLikes(liked), 113);
+    assert.equal(liked.retweet_count, 7);
+    assert.equal(liked.retweeted_status.favorite_count, 113);
+    assert.equal(shownLikes(counted(false, 113, 7)), 113);
+
+    // counts X has not caught up on: the like and the retweet of the account itself are still counted
+    const stale = counted(true, 0, 0);
+    assert.equal(shownLikes(stale), 1);
+    assert.equal(stale.retweeted_status.favorite_count, 1);
+    assert.equal(stale.retweet_count, 1);
+    assert.equal(stale.retweeted_status.retweet_count, 1);
+});
+
+test('a liked or retweeted tweet that X counts as 0 is counted once, and one whose retweeted tweet is unavailable too', () => {
+    const res = tweetResult('100', user('1', 'alice'), 'hello world');
+    Object.assign(res.legacy, { favorite_count: 0, retweet_count: 0, favorited: true, retweeted: true });
+    const tweet = loadParseTweet()(res);
+    assert.equal(tweet.favorite_count, 1);
+    assert.equal(tweet.retweet_count, 1);
+
+    const orphan = retweetOf({ __typename: 'TweetUnavailable', reason: 'Protected' });
+    Object.assign(orphan.legacy, { favorite_count: 0, retweet_count: 0, favorited: true, retweeted: false });
+    const parsed = loadParseTweet()(orphan);
+    assert.equal(parsed.favorite_count, 1);
+    assert.equal(parsed.retweet_count, 0);
+});
+
 test('retweet wrapped in TweetWithVisibilityResults without limitedActionResults is unwrapped', () => {
     const inner = {
         __typename: 'TweetWithVisibilityResults',
