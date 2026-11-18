@@ -734,12 +734,47 @@ HAR で分かったが手を付けていないもの:
 
 ### 16-c. 残課題
 
-- 通知の文言は「〜 liked」のまま。legacy には「〜 liked your Retweet」を出す `favorited_retweet` / `retweeted_retweet` のアクションがあるが、OTD は upstream のとおり `favorite` / `retweet` として渡している(変えるとカラムのフィルターと通知の ID が変わる)。
+- 通知の文言は「〜 liked」のまま。legacy には「〜 liked your Retweet」を出す `favorited_retweet` / `retweeted_retweet` のアクションがあるが、OTD は upstream のとおり `favorite` / `retweet` として渡している(変えるとカラムのフィルターと通知の ID が変わる)。→ Phase 17 で切り替えた。
 
 ### Phase 16 のテスト
 
 - `tests/parse-tweet.test.cjs`(2 件追加): いいね済みの RT は RT 先のいいね数が出る、RT 数はそのまま、X の集計が 0 のときは RT 先と RT 数が 1 になる、RT ではないツイートと RT 先が取れない RT は従来どおり。1 件目は修正前のコードでは落ちる。
 - `node --test tests/*.test.cjs` は 192 件通過。
+
+## Phase 17: 自分の RT へのいいね・RT を「your Retweet」の通知として出す(実装済み)
+
+**状態: 実装済み(2026-11-18)。実機確認 2026-11-18(ローカルのファイルで、見出し・ツイート本体の見た目・「Actions on my Retweets」のフィルターの 3 点を見るよう伝え、ユーザーから問題なしの報告。項目ごとの結果は聞いていない。HAR は無い)。** 変更は `src/interception.js`(`actionOnRetweet` と Notifications ルート)と `files/bundle.js`(1 行)。テストは `tests/notifications-graphql.test.cjs`。
+
+発端: Phase 16 の残課題。自分の RT にいいねされた通知の見出しが、自分のツイートへのいいねと同じ「〜 liked」だった。
+
+### 17-a. 確認した事実(`files/bundle.js` と 2026-11-18 の `x.com-tweetdeck-7.har`)
+
+- X は通知の種類で区別している(`users_liked_your_retweet` / `users_retweeted_your_retweet`)。対象は自分の RT で、RT 先が中に入っている。OTD は upstream のとおり、どちらも `favorite` / `retweet` として legacy に渡していた。
+- legacy には専用のアクションがある: `favorited_retweet`(`TwitterActionFavoritedInteraction`、見出しは「{{user}} liked your Retweet」)と `retweeted_retweet`(`TwitterActionRetweetedInteraction`、「{{user}} Retweeted your Retweet」)。`targets` を RT、`target_objects` を「誰についての通知か」のユーザーとして読み、表示するツイートと chirp の ID は RT 先から作る(`favorited_retweet_<相手>_<RT 先の ID>`)。
+- カラムのフィルターの「Actions on my Retweets」は、この 2 つの種類だけを隠す(`decider.json` で両方とも有効なので、チェックは今も表示されている)。これまでは `favorite` / `retweet` として届いていたので、このチェックは何も隠さず、RT へのいいねは「Likes」、RT への RT は「Retweets」のチェックに従っていた。
+- legacy は RT の 1 枚目の写真に人がタグ付けされていると、種類を `favorited_media_tagged` / `retweeted_media_tagged`(「Tweets tagging me」のチェックの対象)に変える。自分がタグ付けされているかは見ていない。見出しは RT 先がある限り「your Retweet」のまま。記録では、メディア付きの RT 103 件中 3 件にタグがある。
+- legacy は RT 先の無い対象を「liked a Tweet you were mentioned in」と表示する。
+- `TwitterActionRetweetedInteraction` の `generateText` は `htmlText` だけを作り、デスクトップ通知の題名になる `text` を作っていない(ほかのアクションは両方作る)。
+
+### 17-b. 対応
+
+- 上の 2 種類の通知は、対象に RT 先とその投稿者があるとき `favorited_retweet` / `retweeted_retweet` として渡す(`actionOnRetweet`)。`targets` は自分の RT、`target_objects` は自分のユーザー。重複判定と位置に使う ID も legacy と同じ形にした。
+- legacy に渡す RT の写しからはメディアを外す(legacy がこの写しから読むのは RT 先とタグだけ)。タグ付きの写真の RT でも「Actions on my Retweets」の対象のままになる。表示されるメディアは RT 先のものなので変わらない。
+- RT 先が取れなかった RT は、従来どおり `favorite` / `retweet` として渡す。`OTDnotificationsSource = "all.json"` の応答は RT 先が中に入っていないので、こちらも従来どおりになる。
+- `files/bundle.js`: `TwitterActionRetweetedInteraction` の `generateText` に `text` を足した(行数は変えていない)。
+- 確認: 記録された 2 応答をルートに通すと、40 件のうち 4 件が `favorited_retweet` 2 / `retweeted_retweet` 2 になり、どれも RT 先(いいね 113、RT 7)を持つ。残り(`favorite` 32、`reply` 3、`retweet` 1)は変わらない。
+
+### 17-c. 利用者から見た変化と残課題
+
+- 見出しが「〜 liked your Retweet」「〜 Retweeted your Retweet」になる。表示されるツイートは自分の RT ではなく RT 先そのものになる(いいね数などは RT 先の値。Phase 16 の症状はこの通知では元から起きなくなる)。
+- フィルターの効き方が変わる。「Likes」を外して「Actions on my Retweets」を残している人には RT へのいいねが出るようになり、「Actions on my Retweets」を外している人には RT へのいいね・RT が出なくなる。どちらも legacy 本来の動作。
+- `user_liked_multiple_tweets`(1 人が複数のツイートにいいね)は従来どおり `favorite`。対象に自分の RT が混ざるかは記録が無い。
+- RT 先の投稿者をミュート・ブロックしている場合の扱いは変えていない(従来も RT の中身として表示されていた)。
+
+### Phase 17 のテスト
+
+- `tests/notifications-graphql.test.cjs`(4 件追加): ルートの出力を `files/bundle.js` の実際の `fromRESTData` / `generateInternalID` / `generateText` に通して、見出しと題名、種類(タグ付きの写真でも変わらない)、表示されるツイートが RT 先であること、ID が legacy の作るものと一致して重複して届かないこと。RT 先が無いときと、自分のツイートへのいいねは従来どおり。
+- `node --test tests/*.test.cjs` は 196 件通過。
 
 ---
 
