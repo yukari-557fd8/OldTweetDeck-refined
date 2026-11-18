@@ -3337,6 +3337,27 @@ function legacyNotificationId(action, userId, targetId) {
     return `${legacyAction}_${userId}_${targetId}`;
 }
 
+// A like or a retweet of one's retweet, as the action legacy has for it ("{{user}} liked your
+// Retweet", under the column's "Actions on my Retweets"; TwitterActionFavoritedInteraction and
+// TwitterActionRetweetedInteraction in bundle.js). Legacy takes the target as the retweet, shows
+// the retweeted tweet and builds the chirp id from it, and reads target_objects as the user the
+// action is about. Two things it does with the target are kept from happening: a retweet whose
+// first photo has people tagged turns into "a Tweet you were tagged in" for the column's filter
+// (so the copy handed over has no media; legacy reads nothing else from it), and a target with
+// no retweeted tweet reads "a Tweet you were mentioned in" (so that one stays a plain like or
+// retweet: null).
+function actionOnRetweet(plainAction, tweet) {
+    const retweeted = tweet.retweeted_status;
+    if (!retweeted?.id_str || !retweeted.user || !tweet.user) return null;
+    const { extended_entities, ...target } = tweet;
+    return {
+        action: plainAction === "retweet" ? "retweeted_retweet" : "favorited_retweet",
+        chirpTweetId: retweeted.id_str,
+        target,
+        about: tweet.user,
+    };
+}
+
 // Legacy's fromRESTData throws when a mention's author is missing, and processActions
 // then drops the whole page. Skip that entry. A quote whose tweet or author is missing
 // is left off the entry instead of failing it.
@@ -4367,15 +4388,17 @@ const proxyRoutes = [
                                         for(const tweetId of tweets) {
                                             const user = go.users[userId];
                                             const tweet = notificationTweet(go, tweetId);
-                                            const action = type === "users_retweeted_your_tweet" || type === "users_retweeted_your_retweet" ? "retweet" : "favorite";
+                                            const plainAction = type === "users_retweeted_your_tweet" || type === "users_retweeted_your_retweet" ? "retweet" : "favorite";
                                             if(!tweet || !user || userHidden(user)) continue;
-                                            const id = legacyNotificationId(action, userId, tweetId);
+                                            const onRetweet = type === "users_liked_your_retweet" || type === "users_retweeted_your_retweet" ? actionOnRetweet(plainAction, tweet) : null;
+                                            const action = onRetweet ? onRetweet.action : plainAction;
+                                            const id = legacyNotificationId(action, userId, onRetweet ? onRetweet.chirpTweetId : tweetId);
                                             if(!shouldDeliver(id)) continue;
                                             const notifSortIndex = stableNotificationPosition(id, +sortIndex - (i++));
-    
+
                                             const sources = [user];
-                                            const targets = [tweet];
-                                            const target_objects = [tweet];
+                                            const targets = [onRetweet ? onRetweet.target : tweet];
+                                            const target_objects = [onRetweet ? onRetweet.about : tweet];
                                             notifications.push({
                                                 action,
                                                 created_at: formatTwitterStyle(new Date(notifSortIndex)),

@@ -209,3 +209,111 @@ test('without legacy\'s follow action the accepted request is left out, and the 
     ]));
     assert.deepEqual(actions.map(summary), ['follow:13:13@640']);
 });
+
+// A like and a retweet of one's retweet (NotificationsTimeline, 2026-11-18): the target is the
+// account's retweet, whose own favorite_count is 0. Its first photo has someone tagged here.
+const tagged = { media: [{ id_str: '9', type: 'photo', media_url_https: 'https://pbs.twimg.com/media/a.jpg', url: 'https://t.co/aaaaaaaaaa', indices: [0, 23],
+    features: { all: { tags: [{ user_id: '77', name: 'User 77', screen_name: 'user77', type: 'user' }] } } }] };
+const myRetweet = (retweeted = gTweet('100', gUser('5'), { favorite_count: 113, retweet_count: 7, favorited: true, retweeted: true, extended_entities: tagged })) =>
+    gTweet('900', me, { full_text: 'RT @user5: tweet 100', favorite_count: 0, retweet_count: 7, favorited: true, retweeted: true, extended_entities: tagged, retweeted_status_result: { result: retweeted } });
+const onMyRetweet = (retweeted) => page([
+    aggregate('users_liked_your_retweet', 'n1', 1000, [gUser('7'), gUser('8')], [myRetweet(retweeted)]),
+    aggregate('users_retweeted_your_retweet', 'n2', 900, [gUser('7')], [myRetweet(retweeted)]),
+]);
+
+// What legacy makes of an action (files/bundle.js), with its user and status classes cut down to
+// the fields read here.
+const bundle = fs.readFileSync('files/bundle.js', 'utf8');
+function legacyMethod(marker, scope) {
+    const at = bundle.indexOf(marker);
+    assert.notEqual(at, -1, marker);
+    const start = bundle.indexOf('function', at);
+    let depth = 0;
+    for (let i = bundle.indexOf('{', start); i < bundle.length; i++) {
+        if (bundle[i] === '{') depth++;
+        else if (bundle[i] === '}' && --depth === 0) return new Function(...Object.keys(scope), `return (${bundle.slice(start, i + 1)});`)(...Object.values(scope));
+    }
+    throw new Error('unterminated ' + marker);
+}
+function legacyChirp(action) {
+    const account = { getUserID: () => '42' };
+    class TwitterUser { constructor(a) { this.account = a; } fromJSONObject(e) { this.id = e.id_str; this.name = e.name; return this; } isMe() { return this.account.getUserID() == this.id; } getProfileURL() { return ''; } }
+    class TwitterStatus { fromJSONObject(e) { this.id = e.id_str; this.likeCount = e.favorite_count; this.user = e.user; return this; } }
+    const TD = {
+        services: { TwitterUser, TwitterStatus, TwitterAction: {
+            FAVORITED_RETWEET: 'favorited_retweet', FAVORITED_MENTION: 'favorited_mention', FAVORITED_MEDIA: 'favorited_media_tagged',
+            RETWEETED_RETWEET: 'retweeted_retweet', RETWEETED_MENTION: 'retweeted_mention', RETWEETED_MEDIA: 'retweeted_media_tagged',
+        } },
+        ui: { template: { toHtml: (text, values) => text.replace('{{{user}}}', values.user), render: (name, values) => `<b>${values.name}</b>` } },
+    };
+    const get = (object, path, fallback) => path.replace(/\[(\d+)\]/g, '.$1').split('.').reduce((o, key) => o?.[key], object) ?? fallback;
+    const translate = { default: (text) => text };
+    const kind = { favorited_retweet: 'TwitterActionFavoritedInteraction', retweeted_retweet: 'TwitterActionRetweetedInteraction' }[action.action];
+    // the names these two modules bind lodash's get, the translation and linkifyUser to
+    const scope = kind === 'TwitterActionFavoritedInteraction'
+        ? { TD, n: { default: get }, s: translate, r: { linkifyUser: (user) => `<b>${user.name}</b>` } }
+        : { TD, n: { default: get }, s: translate };
+    const chirp = { account, action: action.action };
+    legacyMethod(`TD.services.${kind}.prototype.fromRESTData = `, scope).call(chirp, action, action.sources[0], action.targets[0], action.target_objects[0]);
+    chirp.isAboutYou = legacyMethod(`TD.services.${kind}.prototype.isAboutYou = `, scope);
+    legacyMethod('TD.services.TwitterActionOnTweet.prototype.generateInternalID = ', { TD }).call(chirp);
+    legacyMethod(`TD.services.${kind}.prototype.generateText = `, scope).call(chirp);
+    return chirp;
+}
+
+test('a like or a retweet of a retweet of the account is the action legacy words as "your Retweet"', () => {
+    const actions = deliver(load().notifications, onMyRetweet());
+    assert.deepEqual(actions.map(summary), ['favorited_retweet:7:900@1000', 'favorited_retweet:8:900@999', 'retweeted_retweet:7:900@900']);
+    for (const action of actions) {
+        // the target is the retweet, the object the account it is about
+        assert.equal(action.targets[0].retweeted_status.id_str, '100');
+        assert.equal(action.target_objects[0].id_str, '42');
+        assert.equal(action.target_objects[0].screen_name, 'user42');
+        assert.equal(action.target_objects_size, 1);
+    }
+    const chirps = actions.map(legacyChirp);
+    // `text` is the title of the desktop notification, `htmlText` the line above the tweet
+    assert.deepEqual(chirps.map(c => c.text), ['User 7 liked your Retweet', 'User 8 liked your Retweet', 'User 7 Retweeted your Retweet']);
+    assert.deepEqual(chirps.map(c => c.htmlText), ['<b>User 7</b> liked your Retweet', '<b>User 8</b> liked your Retweet', '<b>User 7</b> Retweeted your Retweet']);
+    // the tagged photo does not move them under the column's "Tweets tagging me"
+    assert.deepEqual(chirps.map(c => c.action), ['favorited_retweet', 'favorited_retweet', 'retweeted_retweet']);
+    for (const chirp of chirps) {
+        assert.equal(chirp.isAboutYou(), true);
+        // the tweet shown is the retweeted one, with its own likes
+        assert.equal(chirp.targetTweet.id, '100');
+        assert.equal(chirp.targetTweet.likeCount, 113);
+        assert.equal(chirp.targetTweet.user.screen_name, 'user5');
+    }
+});
+
+test('the ids of actions on a retweet are the ones legacy builds, so a poller that holds them is not sent them again', () => {
+    const ids = deliver(load().notifications, onMyRetweet()).map(legacyChirp).map(c => c.id);
+    assert.deepEqual(ids, ['favorited_retweet_7_100', 'favorited_retweet_8_100', 'retweeted_retweet_7_100']);
+    const holds = (...held) => {
+        const TD = { controller: {
+            columnManager: { getAll: () => ({ col: { getFeeds: () => [{ getType: () => 'interactions', getAccountKey: () => 'twitter:42', getKey: () => 'feed' }] } }) },
+            feedManager: { getPoller: () => ({ chirpIndex: Object.fromEntries(held.map(id => [id, {}])) }) },
+        } };
+        return deliver(load({}, { TD }).notifications, onMyRetweet()).map(summary);
+    };
+    assert.deepEqual(holds(...ids), []);
+    assert.deepEqual(holds(ids[0], ids[2]), ['favorited_retweet:8:900@1000']);
+    // ids spelled the way a plain like or retweet is would let everything through again
+    assert.equal(holds('favorite_7_900', 'favorite_8_900', 'retweet_7_900').length, 3);
+});
+
+test('a retweet whose retweeted tweet did not come stays a plain like or retweet', () => {
+    // legacy would word it "liked a Tweet you were mentioned in"
+    const actions = deliver(load().notifications, onMyRetweet({ __typename: 'TweetUnavailable', reason: 'Protected' }));
+    assert.deepEqual(actions.map(summary), ['favorite:7:900@1000', 'favorite:8:900@999', 'retweet:7:900@900']);
+    assert.equal(actions[0].target_objects[0].id_str, '900');
+});
+
+test('a like of a tweet of the account stays a plain like, tagged photo or not', () => {
+    const actions = deliver(load().notifications, page([
+        aggregate('users_liked_your_tweet', 'n1', 1000, [gUser('7')], [gTweet('100', me, { extended_entities: tagged })]),
+    ]));
+    assert.deepEqual(actions.map(summary), ['favorite:7:100@1000']);
+    assert.equal(actions[0].targets[0].extended_entities.media[0].features.all.tags.length, 1);
+    assert.equal(actions[0].target_objects[0].id_str, '100');
+});

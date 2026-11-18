@@ -42149,7 +42149,7 @@ document.body.addEventListener("click", function (e) {
                     (e = this.mediaTagged
                         ? "{{{user}}} Retweeted a Tweet you were tagged in"
                         : "{{{user}}} Retweeted a Tweet you were mentioned in");
-                var t = (0, s.default)(e, null, !0);
+                var t = (0, s.default)(e, null, !0); this.text = TD.ui.template.toHtml(t, { user: this.sourceUser.name }); // the desktop notification's title: the other actions set it, this one did not
                 this.htmlText = TD.ui.template.toHtml(t, {
                     user: TD.ui.template.render("text/user_link_fullname", {
                         name: this.sourceUser.name,
